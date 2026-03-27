@@ -31,9 +31,19 @@ export type UserSession = {
 export type PersistedProfile = {
   profileId: string;
   profileAnswers: Record<string, string>;
+  email?: string;
+  passwordHash?: string;
   profileComplete: boolean;
   createdAt: string;
   updatedAt: string;
+};
+
+export type LiveNewsCard = {
+  headline: string;
+  url: string;
+  source: string;
+  publishedAt?: string;
+  section: "Tax" | "Loans" | "Investments" | "Insurance";
 };
 
 export type RecommendationCard = {

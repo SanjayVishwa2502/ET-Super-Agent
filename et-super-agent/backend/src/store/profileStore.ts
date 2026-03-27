@@ -2,6 +2,7 @@ import { promises as fs } from "fs";
 import { v4 as uuidv4 } from "uuid";
 import path from "path";
 import { fileURLToPath } from "url";
+import crypto from "crypto";
 import { PersistedProfile } from "../types.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -11,6 +12,12 @@ const profilesFilePath = path.resolve(__dirname, "../../data/profiles.json");
 type SaveProfileInput = {
   profileId?: string;
   profileAnswers: Record<string, string>;
+};
+
+type RegisterInput = {
+  name: string;
+  email: string;
+  password: string;
 };
 
 async function ensureStoreFile(): Promise<void> {
@@ -41,6 +48,14 @@ async function writeProfiles(profiles: PersistedProfile[]): Promise<void> {
 
 function normalizeName(name: string): string {
   return name.trim().toLowerCase();
+}
+
+function normalizeEmail(email: string): string {
+  return email.trim().toLowerCase();
+}
+
+function hashPassword(password: string): string {
+  return crypto.createHash("sha256").update(password).digest("hex");
 }
 
 function mergeAnswers(
@@ -75,6 +90,55 @@ async function getByName(name: string): Promise<PersistedProfile | undefined> {
   const profiles = await readProfiles();
   const normalized = normalizeName(name);
   return profiles.find((profile) => normalizeName(profile.profileAnswers.name ?? "") === normalized);
+}
+
+async function getByEmail(email: string): Promise<PersistedProfile | undefined> {
+  const profiles = await readProfiles();
+  const normalized = normalizeEmail(email);
+  return profiles.find((profile) => normalizeEmail(profile.email ?? "") === normalized);
+}
+
+async function register(input: RegisterInput): Promise<PersistedProfile> {
+  const profiles = await readProfiles();
+  const normalizedEmail = normalizeEmail(input.email);
+  const emailExists = profiles.some((profile) => normalizeEmail(profile.email ?? "") === normalizedEmail);
+  if (emailExists) {
+    throw new Error("EMAIL_EXISTS");
+  }
+
+  const now = new Date().toISOString();
+  const profileAnswers = mergeAnswers({}, {
+    name: input.name,
+    email: normalizedEmail,
+  });
+
+  const created: PersistedProfile = {
+    profileId: uuidv4(),
+    profileAnswers,
+    email: normalizedEmail,
+    passwordHash: hashPassword(input.password),
+    profileComplete: isProfileComplete(profileAnswers),
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  profiles.push(created);
+  await writeProfiles(profiles);
+  return created;
+}
+
+async function verifyCredentials(input: { email: string; password: string }): Promise<PersistedProfile | undefined> {
+  const profile = await getByEmail(input.email);
+  if (!profile || !profile.passwordHash) {
+    return undefined;
+  }
+
+  const providedHash = hashPassword(input.password);
+  if (providedHash !== profile.passwordHash) {
+    return undefined;
+  }
+
+  return profile;
 }
 
 async function save(input: SaveProfileInput): Promise<PersistedProfile> {
@@ -127,5 +191,8 @@ export const profileStore = {
   getAll,
   getById,
   getByName,
+  getByEmail,
+  register,
+  verifyCredentials,
   save,
 };

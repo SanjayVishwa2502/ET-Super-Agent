@@ -8,7 +8,8 @@ import { z } from "zod";
 const LLM_CONFIG = {
     baseUrl: process.env.LOCAL_MODEL_BASE_URL || "http://localhost:11434",
     model: process.env.LOCAL_MODEL_NAME || "llama3.2:3b",
-    enabled: process.env.USE_LLM !== "false",
+    // Zero-cost default: model calls run only when explicitly enabled.
+    enabled: process.env.USE_LLM === "true",
     timeoutMs: Number(process.env.LLM_TIMEOUT_MS ?? 15000),
     maxRetries: Number(process.env.LLM_MAX_RETRIES ?? 1),
     temperature: Number(process.env.LLM_TEMPERATURE ?? 0.7),

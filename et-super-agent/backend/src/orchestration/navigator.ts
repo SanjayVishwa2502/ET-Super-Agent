@@ -69,11 +69,33 @@ function normalized(text: string): string {
   return text.toLowerCase();
 }
 
+export function isEducationalQuery(message: string): boolean {
+  const msg = normalized(message).trim();
+
+  // Educational/definition intent should not be forced into product/service stress flows.
+  const definitionPatterns = [
+    /\bwhat is\b/,
+    /\bwhat's\b/,
+    /\bdefine\b/,
+    /\bmeaning of\b/,
+    /\bexplain\b/,
+    /\bhow does .* work\b/,
+    /\bcan you explain\b/,
+  ];
+
+  return definitionPatterns.some((pattern) => pattern.test(msg));
+}
+
 export function detectGapLabel(input: { message: string; session: UserSession }): GapLabel {
   const msg = normalized(input.message);
   const topic = normalized(input.session.pageContext.topic);
   const intent = normalized(input.session.intents[0] ?? "");
   const hasActiveLoans = (input.session.enrichedContext?.user?.activeLoans?.length ?? 0) > 0;
+
+  if (isEducationalQuery(input.message)) {
+    return "GENERAL_INQUIRY";
+  }
+
   const hasInsuranceHints =
     msg.includes("insurance") ||
     msg.includes("cover") ||
@@ -173,6 +195,16 @@ export async function detectGapDecision(input: {
   message: string;
   session: UserSession;
 }): Promise<GapDecision> {
+  if (isEducationalQuery(input.message)) {
+    return {
+      label: "GENERAL_INQUIRY",
+      confidence: 0.95,
+      reasoning: "Definition-style educational query detected; avoid overfitting to contextual debt/topic signals.",
+      source: "rules",
+      recommendationFocus: ["tool", "product", "event"],
+    };
+  }
+
   const userContext = {
     profileAnswers: input.session.profileAnswers,
     persona: input.session.persona,

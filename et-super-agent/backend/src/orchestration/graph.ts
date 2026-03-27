@@ -1,7 +1,7 @@
 import { Annotation, END, START, StateGraph } from "@langchain/langgraph";
 import { KGRepository } from "../data/kgRepository.js";
 import { rankItems } from "../data/scoring.js";
-import { detectGapDecision, GapLabel, GapStrategy, getGapStrategy } from "./navigator.js";
+import { detectGapDecision, GapLabel, GapStrategy, getGapStrategy, isEducationalQuery } from "./navigator.js";
 import { CrossSellTemplate, getCrossSellTemplate } from "./crossSellTemplates.js";
 import { assessScenario, ScenarioAssessment } from "../scenarios/scenarioGuard.js";
 import { llm } from "../services/llmService.js";
@@ -50,6 +50,10 @@ function applyStrategyTypePreference(
 function inferLatestGoal(input: { message: string; pageTopic: string; fallbackIntent?: string }): string {
   const messageText = input.message.toLowerCase();
   const pageTopicText = input.pageTopic.toLowerCase();
+
+  if (isEducationalQuery(input.message)) {
+    return "learn basics";
+  }
 
   if (messageText.includes("debt") || messageText.includes("credit card") || messageText.includes("loan")) {
     return "debt reduction";
@@ -114,6 +118,29 @@ function applySessionHistoryRefinement(
   });
 }
 
+function shouldBypassProfilingForDirectChat(message: string): boolean {
+  if (isEducationalQuery(message)) {
+    return true;
+  }
+
+  const normalized = message.toLowerCase();
+  const financeSignals = [
+    "tax",
+    "loan",
+    "debt",
+    "sip",
+    "mutual fund",
+    "portfolio",
+    "insurance",
+    "emi",
+    "invest",
+    "fd",
+    "inflation",
+  ];
+
+  return financeSignals.some((signal) => normalized.includes(signal));
+}
+
 function buildTransparentWhy(input: {
   cardType: RecommendationCard["type"];
   latestGoal: string;
@@ -130,6 +157,54 @@ function buildTransparentWhy(input: {
     : "New for this session to improve follow-up variety.";
 
   return `Aligned to your ${input.latestGoal} goal in ${input.topicHint} context; selected as ${input.cardType} under strategy ${focusText}. ${freshnessText}`;
+}
+
+function composeDeterministicAssistantMessage(input: {
+  userMessage: string;
+  topic: string;
+  intent: string;
+  gapLabel?: GapLabel;
+  recommendations: RecommendationCard[];
+  profileAnswers: Record<string, string>;
+}): string {
+  const msg = input.userMessage.toLowerCase();
+  const name = input.profileAnswers.name;
+  const opener = name ? `${name}, here is the quick take.` : "Here is the quick take.";
+
+  const isDefinitionQuery = /\b(what is|what's|define|explain|how does .* work)\b/.test(msg);
+  const intentText = input.intent || "financial planning";
+  const topicText = input.topic || "personal finance";
+
+  if (isDefinitionQuery) {
+    const recHint = input.recommendations[0]?.title
+      ? `If you want, I can also connect this to ${input.recommendations[0].title}.`
+      : "If you want, I can connect this to a practical next step.";
+    return `${opener} You asked a concept question, so I am focusing on clarity first, then action. In simple terms, this topic fits within ${topicText} and should be evaluated against your risk comfort, time horizon, and liquidity needs. ${recHint}`;
+  }
+
+  const gapHint = input.gapLabel
+    ? `The current priority appears to be ${input.gapLabel.replace(/_/g, " ").toLowerCase()}.`
+    : "I am prioritizing the strongest signal from your latest message.";
+
+  const recTypes = Array.from(new Set(input.recommendations.map((r) => r.type))).join(", ");
+  const recHint = input.recommendations.length > 0
+    ? `I selected ${input.recommendations.length} options across ${recTypes || "tools and products"} to keep the next step practical.`
+    : "I can provide practical options once you share a bit more detail on your objective and timeline.";
+
+  return `${opener} Based on your ${intentText} goal in ${topicText} context, ${gapHint} ${recHint}`;
+}
+
+function composeDeterministicNextQuestion(input: { gapLabel?: GapLabel; topic: string }): string {
+  if (input.gapLabel === "TAX_CONFUSION") {
+    return "Would you like a quick tax action checklist for this year, or a deeper comparison of available options?";
+  }
+  if (input.gapLabel === "DEBT_STRESS") {
+    return "Should we focus first on EMI reduction, debt prioritization order, or consolidation options?";
+  }
+  if (input.gapLabel === "INVESTMENT_CONFUSION") {
+    return "Do you want a starter allocation view first, or should I screen options by your risk profile?";
+  }
+  return `Do you want a quick checklist for ${input.topic}, or a personalized next-step recommendation?`;
 }
 
 function deriveToolMetadataFromCardId(cardId: string): Pick<RecommendationCard, "toolId" | "toolAction"> | undefined {
@@ -464,6 +539,18 @@ const conciergeAgentNode = async (state: typeof GraphState.State) => {
   state.session.profileAnswers = existingAnswers;
   state.session.profileComplete = REQUIRED_PROFILE_FIELDS.every((field) => Boolean(existingAnswers[field]));
 
+  const hasSelectedArticleContext = Boolean(state.session.pageContext.articleId);
+  if (
+    !state.session.profileComplete &&
+    (shouldBypassProfilingForDirectChat(state.message) || hasSelectedArticleContext)
+  ) {
+    return {
+      session: state.session,
+      route: "navigator_agent" as Route,
+      visitedNodes: [...state.visitedNodes, "ConciergeAgent"],
+    };
+  }
+
   if (!state.session.profileComplete) {
     const nextField = getFirstMissingField(existingAnswers) ?? "incomeRange";
     const firstName = existingAnswers.name;
@@ -540,12 +627,13 @@ const recommendationAgentNode = async (state: typeof GraphState.State) => {
   const topic = state.session.pageContext.topic;
   const intent = state.session.intents[0];
   const persona = state.session.persona;
+  const educationalTurn = isEducationalQuery(state.message);
   const latestGoal = inferLatestGoal({
     message: state.message,
     pageTopic: topic,
     fallbackIntent: state.session.latestGoal ?? intent,
   });
-  const topicHint = deriveTopicFromGoal(latestGoal, topic);
+  const topicHint = educationalTurn ? "basics" : deriveTopicFromGoal(latestGoal, topic);
 
   state.session.latestGoal = latestGoal;
 
@@ -617,20 +705,23 @@ const recommendationAgentNode = async (state: typeof GraphState.State) => {
   ).slice(-20);
 
   const serviceIntent =
-    state.gapLabel === "DEBT_STRESS" ||
-    [state.message, state.session.intents[0] ?? ""].some((value) => {
-      const normalized = value.toLowerCase();
-      return (
-        normalized.includes("debt") ||
-        normalized.includes("loan") ||
-        normalized.includes("credit card") ||
-        normalized.includes("card comparison")
-      );
-    });
+    !educationalTurn &&
+    (state.gapLabel === "DEBT_STRESS" ||
+      [state.message, state.session.intents[0] ?? ""].some((value) => {
+        const normalized = value.toLowerCase();
+        return (
+          normalized.includes("debt") ||
+          normalized.includes("loan") ||
+          normalized.includes("credit card") ||
+          normalized.includes("card comparison")
+        );
+      }));
 
   const crossSellReason = serviceIntent
     ? "Rule-gated ON: service-relevant intent detected (DEBT_STRESS/loan/debt context)."
-    : "Rule-gated OFF: no service-relevant intent detected.";
+    : educationalTurn
+      ? "Rule-gated OFF: educational query detected; service cross-sell intentionally suppressed."
+      : "Rule-gated OFF: no service-relevant intent detected.";
 
   return {
     recommendations,
@@ -693,13 +784,21 @@ const responseComposerNode = async (state: typeof GraphState.State) => {
 
     if (!llmResponse.fallback && llmResponse.content.trim()) {
       assistantMessage = llmResponse.content.trim();
-    } else if (state.recommendations.length > 0) {
-      assistantMessage = `Based on your ${intent} goal and ${topic} context, here are the top ET recommendations for you.`;
     } else {
-      assistantMessage = `Based on your ${intent} goal and ${topic} context, I can now recommend the best ET next steps.`;
+      assistantMessage = composeDeterministicAssistantMessage({
+        userMessage: state.message,
+        topic,
+        intent,
+        gapLabel: state.gapLabel,
+        recommendations,
+        profileAnswers: state.session.profileAnswers,
+      });
     }
 
-    nextQuestion = "Should I prioritize ET Prime content, ET Markets tools, or service comparisons?";
+    nextQuestion = composeDeterministicNextQuestion({
+      gapLabel: state.gapLabel,
+      topic,
+    });
   }
 
   if (state.crossSellTriggered && state.crossSellTemplate) {

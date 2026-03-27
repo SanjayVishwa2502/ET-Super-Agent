@@ -19,6 +19,9 @@ export interface NewsArticle {
   topicTags: string[];
   riskSignals: string[];
   productAffinityHints: string[];
+  source?: string;
+  sourceUrl?: string;
+  publishedAt?: string;
 }
 
 export interface ProductItem {

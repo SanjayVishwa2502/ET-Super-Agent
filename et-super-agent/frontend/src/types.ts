@@ -83,6 +83,15 @@ export type ActiveContextSummary = {
 export type DashboardData = {
   newsCards: NewsCard[];
   userPersonas: UserPersona[];
+  liveNews?: LiveNewsCard[];
+};
+
+export type LiveNewsCard = {
+  headline: string;
+  url: string;
+  source: string;
+  publishedAt?: string;
+  section: "Tax" | "Loans" | "Investments" | "Insurance";
 };
 
 export type SavedProfile = {

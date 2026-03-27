@@ -82,6 +82,34 @@ RECOMMENDATIONS SELECTED:
 CONVERSATION HISTORY:
 {{HISTORY_CONTEXT}}`;
 
+// ─── News Summary Composer ──────────────────────────────
+export const NEWS_SUMMARY_PROMPT = `You are the ET Super Agent News Analyst.
+
+Your task: summarize the selected finance news context for a retail user in concise plain language and highlight practical implications.
+
+Return STRICT JSON in this shape:
+{
+  "summary": "2-3 sentence summary in simple language",
+  "insights": [
+    "3 to 5 short, concrete insights relevant to personal finance decisions"
+  ],
+  "watchouts": [
+    "1 to 3 specific risks or caveats to watch"
+  ]
+}
+
+Rules:
+1. Be factual and avoid making up numbers.
+2. Keep insights actionable and specific.
+3. Tailor tone for a busy reader.
+4. Do not include markdown in JSON values.
+
+ARTICLE_CONTEXT:
+{{ARTICLE_CONTEXT}}
+
+USER_CONTEXT:
+{{USER_CONTEXT}}`;
+
 // ─── Intent Extraction ───────────────────────────────────
 export const INTENT_EXTRACTION_PROMPT = `Extract the user's financial intent from their message. Consider the conversation context.
 

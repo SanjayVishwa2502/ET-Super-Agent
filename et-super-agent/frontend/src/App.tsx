@@ -9,7 +9,7 @@ import {
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
-  Message, NewsCard, UserPersona, ActiveContextSummary, DashboardData, SavedProfile
+  Message, NewsCard, UserPersona, ActiveContextSummary, DashboardData, LiveNewsCard
 } from './types';
 
 type ProfileSummary = {
@@ -80,15 +80,23 @@ export default function App() {
   const [activeContext, setActiveContext] = useState<ActiveContextSummary | null>(null);
   const [contextVersion, setContextVersion] = useState(0);
   const [contextSwitching, setContextSwitching] = useState(false);
+  const [summarizingNews, setSummarizingNews] = useState(false);
+  const [liveNews, setLiveNews] = useState<LiveNewsCard[]>([]);
 
   // Persistent profile/login state
-  const [savedProfiles, setSavedProfiles] = useState<SavedProfile[]>([]);
-  const [selectedProfileId, setSelectedProfileId] = useState('');
-  const [loginName, setLoginName] = useState('');
+  const [authMode, setAuthMode] = useState<'signin' | 'signup'>('signin');
+  const [loginEmail, setLoginEmail] = useState('');
+  const [loginPassword, setLoginPassword] = useState('');
+  const [registerName, setRegisterName] = useState('');
+  const [registerEmail, setRegisterEmail] = useState('');
+  const [registerPassword, setRegisterPassword] = useState('');
   const [sessionBooting, setSessionBooting] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [authInfo, setAuthInfo] = useState<string | null>(null);
   const [welcomeBackName, setWelcomeBackName] = useState<string | null>(null);
   const [profileSaving, setProfileSaving] = useState(false);
   const [activeProfileSummary, setActiveProfileSummary] = useState<ProfileSummary>({ name: 'Guest' });
+  const [showPersonaLab, setShowPersonaLab] = useState(false);
   const [lastChatError, setLastChatError] = useState<{ text: string; detail: string } | null>(null);
   const [activeToolAction, setActiveToolAction] = useState<{
     action: "risk-profiler" | "goal-planner" | "fund-screener" | "spend-analyzer";
@@ -100,29 +108,20 @@ export default function App() {
   const [validationReport, setValidationReport] = useState<any>(null);
   const [validationRunning, setValidationRunning] = useState(false);
 
-  // ─── Fetch dashboard data and persisted profiles on mount ────────────────
+  // ─── Fetch dashboard data on mount ───────────────────────────────────────
   useEffect(() => {
     const initializeData = async () => {
       try {
-        const [dashboardRes, profileRes] = await Promise.all([
-          axios.get('/api/dashboard/news'),
-          axios.get('/api/profile/list'),
-        ]);
+        const dashboardRes = await axios.get('/api/dashboard/news');
 
         const data: DashboardData = dashboardRes.data;
         setDashboardData(data);
+        setLiveNews(data.liveNews ?? []);
         if (data.userPersonas.length > 0) {
           setSelectedUser(data.userPersonas[0]);
         }
-
-        const profiles: SavedProfile[] = profileRes.data.profiles ?? [];
-        setSavedProfiles(profiles);
-        if (profiles.length > 0) {
-          setSelectedProfileId(profiles[0].profileId);
-          setLoginName(profiles[0].name);
-        }
       } catch (err) {
-        console.error("Failed to initialize dashboard/profile data:", err);
+        console.error("Failed to initialize dashboard data:", err);
       }
     };
     initializeData();
@@ -130,6 +129,8 @@ export default function App() {
 
   const startGuestSession = async () => {
     setSessionBooting(true);
+    setAuthError(null);
+    setAuthInfo(null);
     try {
       const res = await axios.post('/api/session/start', {
         pageContext: { topic: 'general', tags: ['dashboard'] },
@@ -150,42 +151,20 @@ export default function App() {
     }
   };
 
-  const startSessionWithSelectedProfile = async () => {
-    if (!selectedProfileId) return;
+  const signIn = async () => {
+    if (!loginEmail.trim() || !loginPassword.trim()) return;
     setSessionBooting(true);
-    try {
-      const res = await axios.post('/api/session/start', {
-        profileId: selectedProfileId,
-        pageContext: { topic: 'general', tags: ['dashboard'] },
-      });
-
-      setSessionId(res.data.sessionId);
-      const loadedName = res.data.profile?.name ?? 'there';
-      setWelcomeBackName(loadedName);
-      setActiveProfileSummary(deriveProfileSummaryFromAnswers(res.data.profile?.profileAnswers, loadedName));
-      setMessages([{
-        id: Date.now().toString(),
-        role: 'assistant',
-        content: `Welcome back, ${loadedName}! I loaded your saved profile, so we can jump straight into recommendations.`,
-      }]);
-    } catch (err) {
-      console.error('Failed to start session with saved profile:', err);
-    } finally {
-      setSessionBooting(false);
-    }
-  };
-
-  const loginByName = async () => {
-    if (!loginName.trim()) return;
-    setSessionBooting(true);
+    setAuthError(null);
+    setAuthInfo(null);
     try {
       const res = await axios.post('/api/profile/login', {
-        name: loginName.trim(),
+        email: loginEmail.trim(),
+        password: loginPassword,
         pageContext: { topic: 'general', tags: ['dashboard'] },
       });
 
       setSessionId(res.data.sessionId);
-      const loadedName = res.data.profile?.profileAnswers?.name ?? loginName.trim();
+      const loadedName = res.data.profile?.profileAnswers?.name ?? 'there';
       setWelcomeBackName(loadedName);
       setActiveProfileSummary(deriveProfileSummaryFromAnswers(res.data.profile?.profileAnswers, loadedName));
       setMessages([{
@@ -193,12 +172,56 @@ export default function App() {
         role: 'assistant',
         content: res.data.welcomeMessage ?? `Welcome back, ${loadedName}!`,
       }]);
+      setAuthInfo(`Signed in as ${loadedName}.`);
     } catch (err) {
-      console.error('Login by name failed:', err);
+      console.error('Sign in failed:', err);
+      const detail = axios.isAxiosError(err)
+        ? (err.response?.data?.error ?? err.message)
+        : 'Unable to sign in right now.';
+      setAuthError(String(detail));
       setMessages([{
         id: Date.now().toString(),
         role: 'assistant',
-        content: `I could not find a saved profile for \"${loginName.trim()}\". Please continue as guest or select another profile.`,
+        content: 'Login failed. Please verify your email and password or continue as guest.',
+      }]);
+    } finally {
+      setSessionBooting(false);
+    }
+  };
+
+  const signUp = async () => {
+    if (!registerName.trim() || !registerEmail.trim() || !registerPassword.trim()) return;
+    setSessionBooting(true);
+    setAuthError(null);
+    setAuthInfo(null);
+    try {
+      const res = await axios.post('/api/profile/register', {
+        name: registerName.trim(),
+        email: registerEmail.trim(),
+        password: registerPassword,
+        pageContext: { topic: 'general', tags: ['dashboard'] },
+      });
+
+      setSessionId(res.data.sessionId);
+      const loadedName = res.data.profile?.profileAnswers?.name ?? registerName.trim();
+      setWelcomeBackName(loadedName);
+      setActiveProfileSummary(deriveProfileSummaryFromAnswers(res.data.profile?.profileAnswers, loadedName));
+      setMessages([{
+        id: Date.now().toString(),
+        role: 'assistant',
+        content: res.data.welcomeMessage ?? `Welcome, ${loadedName}!`,
+      }]);
+      setAuthInfo(`Account created for ${loadedName}.`);
+    } catch (err) {
+      console.error('Sign up failed:', err);
+      const detail = axios.isAxiosError(err)
+        ? (err.response?.data?.error ?? err.message)
+        : 'Unable to create account right now.';
+      setAuthError(String(detail));
+      setMessages([{
+        id: Date.now().toString(),
+        role: 'assistant',
+        content: 'Sign up failed. That email may already be in use.',
       }]);
     } finally {
       setSessionBooting(false);
@@ -219,8 +242,6 @@ export default function App() {
         content: `Saved successfully. I can now remember you as ${profileName} next time.`,
       }]);
 
-      const refreshed = await axios.get('/api/profile/list');
-      setSavedProfiles(refreshed.data.profiles ?? []);
     } catch (err) {
       console.error('Profile save failed:', err);
       setMessages(prev => [...prev, {
@@ -256,6 +277,41 @@ export default function App() {
       }]);
     } catch (err) {
       console.error("Context switch failed:", err);
+    } finally {
+      setContextSwitching(false);
+    }
+  }, [sessionId]);
+
+  const handleLiveNewsContextSwitch = useCallback(async (item: LiveNewsCard) => {
+    if (!sessionId) return;
+    setContextSwitching(true);
+    try {
+      const res = await axios.post('/api/context/select-live-news', {
+        sessionId,
+        headline: item.headline,
+        section: item.section,
+        source: item.source,
+        url: item.url,
+      });
+
+      const summary: ActiveContextSummary = res.data.activeContextSummary;
+      setActiveContext(summary);
+      setContextVersion(prev => prev + 1);
+      setSelectedArticle({
+        articleId: summary.articleId,
+        headline: item.headline,
+        section: item.section,
+        topicTags: [item.section.toLowerCase(), item.source, 'live-news'],
+        riskSignals: ['live-market-update'],
+      });
+
+      setMessages(prev => [...prev, {
+        id: Date.now().toString(),
+        role: 'assistant',
+        content: `Live context loaded from **${item.source}**: **${item.headline}**. I will now personalize responses using this article context.`,
+      }]);
+    } catch (err) {
+      console.error('Live news context switch failed:', err);
     } finally {
       setContextSwitching(false);
     }
@@ -460,12 +516,202 @@ export default function App() {
     speakText(summary);
   };
 
+  const summarizeCurrentNews = async () => {
+    if (!sessionId || !selectedArticle || summarizingNews) return;
+
+    setSummarizingNews(true);
+    try {
+      setMessages(prev => [...prev, {
+        id: Date.now().toString(),
+        role: 'user',
+        content: 'Summarize this news for me with key insights.',
+      }]);
+
+      const res = await axios.post('/api/context/summarize-current', { sessionId });
+      const content = res.data.assistantMessage as string;
+
+      setMessages(prev => [...prev, {
+        id: (Date.now() + 1).toString(),
+        role: 'assistant',
+        content,
+      }]);
+      speakText(content);
+    } catch (err) {
+      console.error('News summary failed:', err);
+      setMessages(prev => [...prev, {
+        id: Date.now().toString(),
+        role: 'assistant',
+        content: 'I could not summarize this news right now. Please try again in a moment.',
+      }]);
+    } finally {
+      setSummarizingNews(false);
+    }
+  };
+
   // ─── Group articles by section ─────────────────────────
   const articlesBySection = dashboardData?.newsCards.reduce((acc, article) => {
     if (!acc[article.section]) acc[article.section] = [];
     acc[article.section].push(article);
     return acc;
   }, {} as Record<string, NewsCard[]>) ?? {};
+
+  if (!sessionId) {
+    return (
+      <div className="min-h-screen bg-gradient-to-b from-stone-100 via-white to-stone-100 text-gray-900">
+        <header className="bg-white/90 backdrop-blur border-b border-stone-200 px-8 py-4 flex items-center justify-between sticky top-0 z-30">
+          <h1 className="text-3xl font-serif font-black tracking-tight">
+            <span className="text-primary">THE ECONOMIC</span> TIMES
+          </h1>
+          <div className="text-xs uppercase tracking-[0.22em] text-stone-500 font-semibold">Personal Finance Desk</div>
+        </header>
+
+        <main className="max-w-6xl mx-auto px-4 py-10 grid lg:grid-cols-[1.1fr_0.9fr] gap-6">
+          <section className="bg-white border border-stone-200 rounded-3xl shadow-sm p-8 relative overflow-hidden">
+            <div className="absolute -top-16 -right-16 w-56 h-56 rounded-full bg-gradient-to-br from-amber-200/40 to-rose-200/30 blur-2xl" />
+            <div className="absolute -bottom-20 -left-20 w-64 h-64 rounded-full bg-gradient-to-tr from-sky-200/40 to-teal-200/30 blur-2xl" />
+
+            <div className="relative z-10 max-w-xl">
+              <p className="text-xs uppercase tracking-[0.24em] text-stone-500 font-bold mb-3">ET Super Agent</p>
+              <h2 className="text-4xl md:text-5xl font-black leading-tight tracking-tight text-stone-900">
+                Start from where you left off.
+              </h2>
+              <p className="mt-4 text-stone-600 leading-relaxed">
+                Sign in with your saved profile for instant context-aware guidance, or continue as guest and build your profile gradually.
+              </p>
+
+              <div className="mt-8 grid sm:grid-cols-3 gap-3 text-sm">
+                <div className="bg-stone-50 border border-stone-200 rounded-2xl p-3">
+                  <div className="font-bold text-stone-900">Recall</div>
+                  <div className="text-xs text-stone-500 mt-1">Resume your preferences and goals.</div>
+                </div>
+                <div className="bg-stone-50 border border-stone-200 rounded-2xl p-3">
+                  <div className="font-bold text-stone-900">Context</div>
+                  <div className="text-xs text-stone-500 mt-1">Recommendations adapt to what you read.</div>
+                </div>
+                <div className="bg-stone-50 border border-stone-200 rounded-2xl p-3">
+                  <div className="font-bold text-stone-900">Control</div>
+                  <div className="text-xs text-stone-500 mt-1">Save or switch profile at any time.</div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section className="bg-white border border-stone-200 rounded-3xl shadow-sm p-6 md:p-7">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h3 className="text-xl font-black text-stone-900">Welcome</h3>
+                <p className="text-sm text-stone-500">Sign in with email or create a new account.</p>
+              </div>
+            </div>
+
+            <div className="mt-4 inline-flex rounded-xl border border-stone-300 bg-stone-100 p-1">
+              <button
+                onClick={() => setAuthMode('signin')}
+                className={`px-4 py-1.5 text-sm rounded-lg font-semibold ${authMode === 'signin' ? 'bg-white shadow text-stone-900' : 'text-stone-600'}`}
+              >
+                Sign In
+              </button>
+              <button
+                onClick={() => setAuthMode('signup')}
+                className={`px-4 py-1.5 text-sm rounded-lg font-semibold ${authMode === 'signup' ? 'bg-white shadow text-stone-900' : 'text-stone-600'}`}
+              >
+                Sign Up
+              </button>
+            </div>
+
+            <div className="mt-5 space-y-4">
+              {authMode === 'signin' ? (
+                <>
+                  <div>
+                    <label className="text-[11px] font-bold uppercase tracking-[0.18em] text-stone-500">Email</label>
+                    <input
+                      value={loginEmail}
+                      onChange={(e) => setLoginEmail(e.target.value)}
+                      type="email"
+                      placeholder="name@email.com"
+                      className="w-full mt-1.5 border border-stone-300 rounded-xl px-3 py-2.5 text-sm bg-stone-50"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[11px] font-bold uppercase tracking-[0.18em] text-stone-500">Password</label>
+                    <input
+                      value={loginPassword}
+                      onChange={(e) => setLoginPassword(e.target.value)}
+                      type="password"
+                      placeholder="Enter password"
+                      className="w-full mt-1.5 border border-stone-300 rounded-xl px-3 py-2.5 text-sm bg-stone-50"
+                    />
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div>
+                    <label className="text-[11px] font-bold uppercase tracking-[0.18em] text-stone-500">Name</label>
+                    <input
+                      value={registerName}
+                      onChange={(e) => setRegisterName(e.target.value)}
+                      type="text"
+                      placeholder="Your full name"
+                      className="w-full mt-1.5 border border-stone-300 rounded-xl px-3 py-2.5 text-sm bg-stone-50"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[11px] font-bold uppercase tracking-[0.18em] text-stone-500">Email</label>
+                    <input
+                      value={registerEmail}
+                      onChange={(e) => setRegisterEmail(e.target.value)}
+                      type="email"
+                      placeholder="name@email.com"
+                      className="w-full mt-1.5 border border-stone-300 rounded-xl px-3 py-2.5 text-sm bg-stone-50"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[11px] font-bold uppercase tracking-[0.18em] text-stone-500">Password</label>
+                    <input
+                      value={registerPassword}
+                      onChange={(e) => setRegisterPassword(e.target.value)}
+                      type="password"
+                      placeholder="At least 6 characters"
+                      className="w-full mt-1.5 border border-stone-300 rounded-xl px-3 py-2.5 text-sm bg-stone-50"
+                    />
+                  </div>
+                </>
+              )}
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-1">
+                <button
+                  onClick={authMode === 'signin' ? signIn : signUp}
+                  disabled={sessionBooting || (authMode === 'signin' ? (!loginEmail.trim() || !loginPassword.trim()) : (!registerName.trim() || !registerEmail.trim() || !registerPassword.trim()))}
+                  className="bg-black text-white rounded-xl px-3 py-2.5 text-sm font-semibold disabled:opacity-50"
+                >
+                  {authMode === 'signin' ? 'Sign In' : 'Create Account'}
+                </button>
+                <button
+                  onClick={startGuestSession}
+                  disabled={sessionBooting}
+                  className="sm:col-span-2 bg-stone-100 text-stone-800 border border-stone-300 rounded-xl px-3 py-2.5 text-sm font-semibold disabled:opacity-50"
+                >
+                  Continue as Guest
+                </button>
+              </div>
+
+              {authError && (
+                <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+                  {authError}
+                </div>
+              )}
+
+              {authInfo && !authError && (
+                <div className="text-sm text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2">
+                  {authInfo}
+                </div>
+              )}
+            </div>
+          </section>
+        </main>
+      </div>
+    );
+  }
 
   // ─── Render ────────────────────────────────────────────
   return (
@@ -494,122 +740,84 @@ export default function App() {
         </div>
       </header>
 
-      {!sessionId && (
-        <section className="max-w-6xl mx-auto mt-6 mb-2 px-4">
-          <div className="bg-white border border-gray-200 rounded-2xl shadow-sm p-5">
-            <div className="flex items-center justify-between gap-4 flex-wrap">
-              <div>
-                <h2 className="text-lg font-bold text-gray-900">Profile Login & Recall</h2>
-                <p className="text-sm text-gray-500">Select an existing profile or continue as guest before starting chat.</p>
-              </div>
-              <div className="text-xs text-gray-500">
-                Saved profiles: <span className="font-semibold text-gray-700">{savedProfiles.length}</span>
-              </div>
-            </div>
-
-            <div className="grid md:grid-cols-3 gap-3 mt-4">
-              <div>
-                <label className="text-xs font-semibold uppercase tracking-wider text-gray-500">Quick Select</label>
-                <select
-                  value={selectedProfileId}
-                  onChange={(e) => {
-                    const profileId = e.target.value;
-                    setSelectedProfileId(profileId);
-                    const selected = savedProfiles.find((p) => p.profileId === profileId);
-                    if (selected) {
-                      setLoginName(selected.name);
-                    }
-                  }}
-                  className="w-full mt-1 border border-gray-300 rounded-lg px-3 py-2 text-sm"
-                >
-                  {savedProfiles.length === 0 && <option value="">No saved profiles</option>}
-                  {savedProfiles.map((profile) => (
-                    <option key={profile.profileId} value={profile.profileId}>
-                      {profile.name} ({profile.profileComplete ? 'complete' : 'partial'})
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label className="text-xs font-semibold uppercase tracking-wider text-gray-500">Login by Name</label>
-                <input
-                  value={loginName}
-                  onChange={(e) => setLoginName(e.target.value)}
-                  placeholder="Enter your saved name"
-                  className="w-full mt-1 border border-gray-300 rounded-lg px-3 py-2 text-sm"
-                />
-              </div>
-
-              <div className="flex items-end gap-2">
-                <button
-                  onClick={startSessionWithSelectedProfile}
-                  disabled={sessionBooting || !selectedProfileId}
-                  className="flex-1 bg-black text-white rounded-lg px-3 py-2 text-sm font-semibold disabled:opacity-50"
-                >
-                  Use Profile
-                </button>
-                <button
-                  onClick={loginByName}
-                  disabled={sessionBooting || !loginName.trim()}
-                  className="flex-1 bg-indigo-600 text-white rounded-lg px-3 py-2 text-sm font-semibold disabled:opacity-50"
-                >
-                  Login
-                </button>
-                <button
-                  onClick={startGuestSession}
-                  disabled={sessionBooting}
-                  className="flex-1 bg-gray-100 text-gray-800 border border-gray-300 rounded-lg px-3 py-2 text-sm font-semibold disabled:opacity-50"
-                >
-                  Continue as Guest
-                </button>
-              </div>
-            </div>
-          </div>
-        </section>
-      )}
-
       {/* MAIN 2-COLUMN LAYOUT */}
       <div className="flex gap-0 min-h-[calc(100vh-73px)]">
 
         {/* ── LEFT: DASHBOARD PANEL ── */}
         <div className="w-[420px] bg-white border-r border-gray-200 flex flex-col overflow-hidden shrink-0">
 
-          {/* USER PERSONA SELECTOR */}
+          {/* CONTEXT LAB (OPTIONAL) */}
           <div className="p-4 border-b border-gray-100 bg-gradient-to-br from-slate-50 to-gray-50">
-            <div className="flex items-center gap-2 mb-3">
-              <User size={16} className="text-blue-600" />
-              <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500">Select Persona</h3>
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <User size={16} className="text-blue-600" />
+                <div>
+                  <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500">Reader Lens</h3>
+                  <p className="text-[11px] text-gray-500">
+                    {selectedUser ? `${selectedUser.name.split('(')[0].trim()} • ${selectedUser.incomeBand}` : 'No lens selected'}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowPersonaLab((prev) => !prev)}
+                className="text-[11px] font-semibold px-2.5 py-1 rounded-lg border border-gray-300 bg-white hover:bg-gray-100"
+              >
+                {showPersonaLab ? 'Hide Context Lab' : 'Switch Lens'}
+              </button>
             </div>
-            <div className="grid grid-cols-2 gap-2">
-              {dashboardData?.userPersonas.map(user => (
-                <button
-                  key={user.userId}
-                  onClick={() => handleUserClick(user)}
-                  className={`persona-card text-left p-3 rounded-xl bg-white shadow-sm ${selectedUser?.userId === user.userId ? 'selected' : ''
-                    }`}
-                >
-                  <div className="text-sm font-semibold text-gray-800 leading-tight mb-1">
-                    {user.name.split('(')[0].trim()}
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    <span className={`text-[10px] font-bold uppercase px-1.5 py-0.5 rounded risk-${user.riskAppetite}`}>
-                      {user.riskAppetite} risk
-                    </span>
-                    <span className="text-[10px] text-gray-400">{user.incomeBand}</span>
-                  </div>
-                  {user.activeLoans.length > 0 && (
-                    <div className="text-[10px] text-red-500 mt-1 font-medium">
-                      ⚠ {user.activeLoans.length} active loan{user.activeLoans.length > 1 ? 's' : ''}
+
+            {showPersonaLab && (
+              <div className="grid grid-cols-2 gap-2 mt-3">
+                {dashboardData?.userPersonas.map(user => (
+                  <button
+                    key={user.userId}
+                    onClick={() => handleUserClick(user)}
+                    className={`persona-card text-left p-3 rounded-xl bg-white shadow-sm ${selectedUser?.userId === user.userId ? 'selected' : ''}`}
+                  >
+                    <div className="text-sm font-semibold text-gray-800 leading-tight mb-1">
+                      {user.name.split('(')[0].trim()}
                     </div>
-                  )}
-                </button>
-              ))}
-            </div>
+                    <div className="flex items-center gap-1.5">
+                      <span className={`text-[10px] font-bold uppercase px-1.5 py-0.5 rounded risk-${user.riskAppetite}`}>
+                        {user.riskAppetite} risk
+                      </span>
+                      <span className="text-[10px] text-gray-400">{user.incomeBand}</span>
+                    </div>
+                    {user.activeLoans.length > 0 && (
+                      <div className="text-[10px] text-red-500 mt-1 font-medium">
+                        ⚠ {user.activeLoans.length} active loan{user.activeLoans.length > 1 ? 's' : ''}
+                      </div>
+                    )}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* NEWS CARDS LIST */}
           <div className="flex-1 overflow-y-auto custom-scrollbar p-4 space-y-5">
+            <div className="border border-gray-200 rounded-xl bg-gradient-to-br from-stone-50 to-white p-3">
+              <div className="flex items-center justify-between mb-2">
+                <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500">Live Internet News</h3>
+                <span className="text-[10px] text-gray-400">Auto-refresh cache: 10m</span>
+              </div>
+              <div className="max-h-40 overflow-y-auto custom-scrollbar space-y-2 pr-1">
+                {liveNews.length === 0 && (
+                  <div className="text-xs text-gray-500">Live feed unavailable. Showing curated ET context cards below.</div>
+                )}
+                {liveNews.map((item, idx) => (
+                  <button
+                    key={`${item.url}-${idx}`}
+                    onClick={() => handleLiveNewsContextSwitch(item)}
+                    className="block rounded-lg border border-gray-100 bg-white px-2.5 py-2 hover:border-gray-300"
+                  >
+                    <div className="text-[10px] uppercase tracking-wide text-gray-400 mb-1">{item.section} • {item.source}</div>
+                    <div className="text-xs font-semibold text-gray-800 leading-snug">{item.headline}</div>
+                  </button>
+                ))}
+              </div>
+            </div>
+
             <div className="flex items-center gap-2 mb-1">
               <Newspaper size={16} className="text-primary" />
               <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500">Today's News</h3>
@@ -677,6 +885,16 @@ export default function App() {
                 <p className="text-gray-400 text-sm mb-6 border-b pb-4">
                   By ET Bureau | Updated: Mar 27, 2026
                 </p>
+                <div className="mb-6 flex items-center gap-2">
+                  <button
+                    onClick={summarizeCurrentNews}
+                    disabled={!sessionId || summarizingNews}
+                    className="inline-flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-semibold px-3 py-2 rounded-lg disabled:opacity-50"
+                  >
+                    {summarizingNews ? 'Summarizing...' : 'Summarize With Super Agent'}
+                  </button>
+                  <span className="text-xs text-gray-500">Get concise summary, insights, and watchouts in chat.</span>
+                </div>
                 <div className="space-y-5 text-lg text-gray-700 leading-relaxed">
                   <p>
                     This article covers key insights related to <strong>{selectedArticle.section.toLowerCase()}</strong> topics
@@ -778,6 +996,36 @@ export default function App() {
                     {activeProfileSummary.incomeRange && (
                       <span className="bg-amber-800/70 border border-amber-600 px-2 py-0.5 rounded-full">Income: {activeProfileSummary.incomeRange}</span>
                     )}
+                  </div>
+                </div>
+
+                <div className="bg-white px-3 py-2 border-b border-gray-200">
+                  <div className="text-[10px] uppercase tracking-wider text-gray-500 font-bold mb-1.5">Quick Tools</div>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    <button
+                      onClick={() => setActiveToolAction({ action: 'risk-profiler', title: 'Risk Profiler' })}
+                      className="text-xs bg-blue-50 hover:bg-blue-100 border border-blue-200 text-blue-700 font-semibold px-2 py-1.5 rounded-lg"
+                    >
+                      Risk Profiler
+                    </button>
+                    <button
+                      onClick={() => setActiveToolAction({ action: 'goal-planner', title: 'Goal Planner' })}
+                      className="text-xs bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 text-emerald-700 font-semibold px-2 py-1.5 rounded-lg"
+                    >
+                      Goal Planner
+                    </button>
+                    <button
+                      onClick={() => setActiveToolAction({ action: 'fund-screener', title: 'Fund Screener' })}
+                      className="text-xs bg-amber-50 hover:bg-amber-100 border border-amber-200 text-amber-700 font-semibold px-2 py-1.5 rounded-lg"
+                    >
+                      Fund Screener
+                    </button>
+                    <button
+                      onClick={() => setActiveToolAction({ action: 'spend-analyzer', title: 'Spend Analyzer' })}
+                      className="text-xs bg-purple-50 hover:bg-purple-100 border border-purple-200 text-purple-700 font-semibold px-2 py-1.5 rounded-lg"
+                    >
+                      Spend Analyzer
+                    </button>
                   </div>
                 </div>
 
@@ -1301,6 +1549,50 @@ function ToolActionModal({
   const [fundResults, setFundResults] = useState<any[]>([]);
   const [spendResult, setSpendResult] = useState<any>(null);
 
+  const buildRiskInsight = (riskLabel: string, riskScore: number, allocation: { equity: number; debt: number; cash: number }) => {
+    const label = String(riskLabel).toLowerCase();
+    const action = label === 'low'
+      ? 'prioritize capital protection and gradual step-up investments'
+      : label === 'high'
+        ? 'use diversification discipline to control downside while targeting growth'
+        : 'balance growth and stability with periodic rebalancing';
+    return `Risk Profiler complete: score ${riskScore}/10 (${riskLabel}). Suggested allocation is ${allocation.equity}% equity, ${allocation.debt}% debt, ${allocation.cash}% cash. Suggested action: ${action}.`;
+  };
+
+  const buildGoalInsight = (monthlyTarget: number, years: number, allocation: { equity: number; debt: number; cash: number }) => {
+    const pacing = monthlyTarget >= 30000
+      ? 'This is an aggressive monthly target; consider extending timeline or increasing current savings to reduce pressure.'
+      : monthlyTarget >= 12000
+        ? 'This is a moderate target and is usually manageable with consistent SIP discipline.'
+        : 'This target is relatively light; consistency matters more than chasing high-return products.';
+    return `Goal Planner complete: monthly target is Rs ${Number(monthlyTarget).toLocaleString('en-IN')} for ${years} years with suggested allocation ${allocation.equity}/${allocation.debt}/${allocation.cash}. ${pacing}`;
+  };
+
+  const buildFundInsight = (userRiskProfile: string, results: any[]) => {
+    const topTitles = results.slice(0, 3).map((item: any) => item.title).join(', ');
+    const count = results.length;
+    const action = count === 0
+      ? 'No strong match was found; broaden tags or relax strict filters for discovery.'
+      : count < 3
+        ? 'Limited matches found; cross-check expense ratio and downside risk before selecting.'
+        : 'You have multiple options; shortlist 2-3 and compare consistency and drawdown behavior.';
+    return `Fund Screener complete for ${userRiskProfile} risk profile. Top matches: ${topTitles || 'No funds matched'}. ${action}`;
+  };
+
+  const buildSpendInsight = (savingsRate: number, debtRatio: number, healthScore: number) => {
+    const scoreBand = healthScore >= 80
+      ? 'strong'
+      : healthScore >= 60
+        ? 'moderate'
+        : 'fragile';
+    const action = debtRatio > 35
+      ? 'Debt ratio is elevated; prioritize EMI reduction and avoid new high-cost borrowing first.'
+      : savingsRate < 20
+        ? 'Savings rate is low; trim discretionary spend and set an automated transfer on salary day.'
+        : 'Current profile is stable; focus on emergency corpus and goal-linked investing cadence.';
+    return `Spend Analyzer complete: savings rate ${savingsRate}%, debt ratio ${debtRatio}%, financial health score ${healthScore}/100 (${scoreBand}). ${action}`;
+  };
+
   const riskSteps = [
     {
       title: 'Investment Horizon',
@@ -1379,7 +1671,7 @@ function ToolActionModal({
           persistToProfile: true,
         });
         setRiskResult(res.data);
-        onResult(`Risk Profiler complete: score ${res.data.riskScore}/10 (${res.data.riskLabel}). Suggested allocation is ${res.data.suggestedAllocation.equity}% equity, ${res.data.suggestedAllocation.debt}% debt, ${res.data.suggestedAllocation.cash}% cash.`);
+        onResult(buildRiskInsight(res.data.riskLabel, res.data.riskScore, res.data.suggestedAllocation));
       }
 
       if (action === 'goal-planner') {
@@ -1394,7 +1686,7 @@ function ToolActionModal({
           persistToProfile: true,
         });
         setGoalResult(res.data);
-        onResult(`Goal Planner complete: monthly target is Rs ${Number(res.data.monthlyTarget).toLocaleString('en-IN')} for ${res.data.timeline.years} years with suggested allocation ${res.data.allocation.equity}/${res.data.allocation.debt}/${res.data.allocation.cash}.`);
+        onResult(buildGoalInsight(res.data.monthlyTarget, res.data.timeline.years, res.data.allocation));
       }
 
       if (action === 'fund-screener') {
@@ -1408,9 +1700,7 @@ function ToolActionModal({
           persistToProfile: true,
         });
         setFundResults(res.data.results ?? []);
-
-        const topTitles = (res.data.results ?? []).slice(0, 3).map((item: any) => item.title).join(', ');
-        onResult(`Fund Screener complete for ${res.data.userRiskProfile} risk profile. Top matches: ${topTitles || 'No funds matched'} .`);
+        onResult(buildFundInsight(res.data.userRiskProfile, res.data.results ?? []));
       }
 
       if (action === 'spend-analyzer') {
@@ -1425,7 +1715,7 @@ function ToolActionModal({
           persistToProfile: true,
         });
         setSpendResult(res.data);
-        onResult(`Spend Analyzer complete: savings rate ${res.data.savingsRate}%, debt ratio ${res.data.debtRatio}%, financial health score ${res.data.healthScore}/100.`);
+        onResult(buildSpendInsight(Number(res.data.savingsRate), Number(res.data.debtRatio), Number(res.data.healthScore)));
       }
 
       if (action !== 'fund-screener') {
