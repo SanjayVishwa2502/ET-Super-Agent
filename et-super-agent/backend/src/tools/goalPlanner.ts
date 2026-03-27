@@ -8,6 +8,7 @@ export type GoalPlannerInput = {
 
 export type GoalPlannerResult = {
   monthlyTarget: number;
+  recommendedAnnualSipStepUpPercent: number;
   allocation: {
     equity: number;
     debt: number;
@@ -20,6 +21,8 @@ export type GoalPlannerResult = {
     months: number;
     years: number;
     expectedAnnualReturn: number;
+    inflationAssumption: number;
+    inflationAdjustedTargetAmount: number;
     expectedMaturityValue: number;
     shortfallAtCurrentSavingsOnly: number;
   };
@@ -45,6 +48,12 @@ function getExpectedAnnualReturn(input: GoalPlannerInput): number {
     return 0.11;
   }
   return 0.09;
+}
+
+function getInflationAssumption(input: GoalPlannerInput): number {
+  if (input.timeHorizonMonths >= 120) return 0.06;
+  if (input.timeHorizonMonths >= 60) return 0.055;
+  return 0.05;
 }
 
 function getAllocation(input: GoalPlannerInput): GoalPlannerResult["allocation"] {
@@ -117,7 +126,13 @@ function buildRecommendations(input: {
 
 export function runGoalPlanner(input: GoalPlannerInput): GoalPlannerResult {
   const annualReturn = getExpectedAnnualReturn(input);
+  const inflationAssumption = getInflationAssumption(input);
   const monthlyRate = annualReturn / 12;
+  const inflationMonthlyRate = inflationAssumption / 12;
+
+  const inflationAdjustedTargetAmount = clampCurrency(
+    input.targetAmount * Math.pow(1 + inflationMonthlyRate, input.timeHorizonMonths),
+  );
 
   const fvCurrentSavings = futureValueOfLumpsum(
     input.currentSavings,
@@ -126,16 +141,17 @@ export function runGoalPlanner(input: GoalPlannerInput): GoalPlannerResult {
   );
 
   const monthlyTarget = requiredSipForTarget(
-    input.targetAmount,
+    inflationAdjustedTargetAmount,
     fvCurrentSavings,
     monthlyRate,
     input.timeHorizonMonths,
   );
 
   const fvWithZeroSip = fvCurrentSavings;
-  const shortfallAtCurrentSavingsOnly = Math.max(0, input.targetAmount - fvWithZeroSip);
+  const shortfallAtCurrentSavingsOnly = Math.max(0, inflationAdjustedTargetAmount - fvWithZeroSip);
   const allocation = getAllocation(input);
   const years = Number((input.timeHorizonMonths / 12).toFixed(1));
+  const recommendedAnnualSipStepUpPercent = years >= 8 ? 10 : years >= 4 ? 8 : 6;
 
   const expectedMaturityValue = clampCurrency(
     fvCurrentSavings +
@@ -146,6 +162,7 @@ export function runGoalPlanner(input: GoalPlannerInput): GoalPlannerResult {
 
   return {
     monthlyTarget: clampCurrency(monthlyTarget),
+    recommendedAnnualSipStepUpPercent,
     allocation,
     timeline: {
       targetGoal: input.targetGoal,
@@ -154,6 +171,8 @@ export function runGoalPlanner(input: GoalPlannerInput): GoalPlannerResult {
       months: input.timeHorizonMonths,
       years,
       expectedAnnualReturn: Number((annualReturn * 100).toFixed(2)),
+      inflationAssumption: Number((inflationAssumption * 100).toFixed(2)),
+      inflationAdjustedTargetAmount,
       expectedMaturityValue,
       shortfallAtCurrentSavingsOnly: clampCurrency(shortfallAtCurrentSavingsOnly),
     },

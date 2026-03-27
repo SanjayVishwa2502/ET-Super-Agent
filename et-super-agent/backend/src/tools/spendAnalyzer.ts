@@ -9,6 +9,7 @@ export type SpendAnalyzerResult = {
   savingsRate: number;
   debtRatio: number;
   healthScore: number;
+  budgetModel: "stability" | "growth" | "defensive";
   recommendations: string[];
   recommendedBudgets: {
     needsBudget: number;
@@ -44,6 +45,7 @@ function buildRecommendations(input: {
   discretionaryRatio: number;
   monthlyIncome: number;
   needsSpend: number;
+  budgetModel: "stability" | "growth" | "defensive";
 }): string[] {
   const recommendations: string[] = [];
 
@@ -69,12 +71,40 @@ function buildRecommendations(input: {
     recommendations.push("Discretionary spending is in a manageable band. Continue tracking with a monthly cap.");
   }
 
+  if (input.budgetModel === "defensive") {
+    recommendations.push("Use a defensive budget mode for the next 90 days: pause non-essential subscriptions and redirect surplus to debt reduction.");
+  } else if (input.budgetModel === "growth") {
+    recommendations.push("You can shift to a growth budget mode: maintain a strong savings floor and deploy incremental surplus into long-term wealth goals.");
+  } else {
+    recommendations.push("Stay in stability mode: keep needs controlled while gradually stepping up savings by 1-2% every quarter.");
+  }
+
   const emergencyMonths = input.needsSpend > 0
     ? Math.max(0, Math.floor((input.monthlyIncome * (input.savingsRate / 100) * 6) / input.needsSpend))
     : 0;
   recommendations.push(`Build an emergency corpus covering at least 6 months of essential expenses (current projected coverage pace: ${emergencyMonths} month-equivalents in 6 months).`);
 
   return recommendations;
+}
+
+function chooseBudgetModel(input: { savingsRate: number; debtRatio: number }): "stability" | "growth" | "defensive" {
+  if (input.debtRatio >= 35 || input.savingsRate < 10) return "defensive";
+  if (input.savingsRate >= 25 && input.debtRatio <= 20) return "growth";
+  return "stability";
+}
+
+function targetBudgetSplit(model: "stability" | "growth" | "defensive"): {
+  needs: number;
+  wants: number;
+  savings: number;
+} {
+  if (model === "defensive") {
+    return { needs: 0.55, wants: 0.15, savings: 0.3 };
+  }
+  if (model === "growth") {
+    return { needs: 0.5, wants: 0.2, savings: 0.3 };
+  }
+  return { needs: 0.5, wants: 0.25, savings: 0.25 };
 }
 
 export function runSpendAnalyzer(input: SpendAnalyzerInput): SpendAnalyzerResult {
@@ -97,22 +127,27 @@ export function runSpendAnalyzer(input: SpendAnalyzerInput): SpendAnalyzerResult
     discretionaryRatio,
   });
 
+  const budgetModel = chooseBudgetModel({ savingsRate, debtRatio });
+  const split = targetBudgetSplit(budgetModel);
+
   const recommendedBudgets = {
-    needsBudget: clampMoney(monthlyIncome * 0.5),
-    wantsBudget: clampMoney(monthlyIncome * 0.3),
-    savingsBudget: clampMoney(monthlyIncome * 0.2),
+    needsBudget: clampMoney(monthlyIncome * split.needs),
+    wantsBudget: clampMoney(monthlyIncome * split.wants),
+    savingsBudget: clampMoney(monthlyIncome * split.savings),
   };
 
   return {
     savingsRate,
     debtRatio,
     healthScore,
+    budgetModel,
     recommendations: buildRecommendations({
       savingsRate,
       debtRatio,
       discretionaryRatio,
       monthlyIncome,
       needsSpend,
+      budgetModel,
     }),
     recommendedBudgets,
   };

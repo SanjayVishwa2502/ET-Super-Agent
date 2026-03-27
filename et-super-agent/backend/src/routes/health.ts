@@ -12,6 +12,7 @@ healthRouter.get("/health", async (_req, res) => {
     llm: {
       enabled: llm.isEnabled,
       available: llmHealthy,
+      provider: llm.providerName,
       model: llm.modelName,
     },
   });

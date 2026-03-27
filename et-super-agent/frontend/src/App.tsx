@@ -4,7 +4,7 @@ import {
   Send, Bot, Cpu, ChevronDown, ChevronUp, ExternalLink, X,
   Mic, MicOff, Volume2, VolumeX, CheckCircle2, XCircle, Zap,
   Newspaper, User, ArrowRight, Sparkles, Shield, TrendingUp,
-  CreditCard, Heart, Activity, FlaskConical, RotateCcw, AlertTriangle
+  CreditCard, Heart, Activity, RotateCcw, AlertTriangle
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -35,6 +35,13 @@ function deriveProfileSummaryFromAnswers(answers?: Record<string, string>, fallb
     topGoal: answers?.topGoal,
     incomeRange: answers?.incomeRange,
   };
+}
+
+function initialsFromName(name: string): string {
+  const parts = name.split(' ').filter(Boolean);
+  if (parts.length === 0) return 'G';
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return `${parts[0][0] ?? ''}${parts[1][0] ?? ''}`.toUpperCase();
 }
 
 // ─── Section icon + color mapping ─────────────────────────
@@ -102,11 +109,6 @@ export default function App() {
     action: "risk-profiler" | "goal-planner" | "fund-screener" | "spend-analyzer";
     title: string;
   } | null>(null);
-
-  // Validation state
-  const [showValidation, setShowValidation] = useState(false);
-  const [validationReport, setValidationReport] = useState<any>(null);
-  const [validationRunning, setValidationRunning] = useState(false);
 
   // ─── Fetch dashboard data on mount ───────────────────────────────────────
   useEffect(() => {
@@ -476,20 +478,6 @@ export default function App() {
     }
   };
 
-  // ─── Validation runner ─────────────────────────────────
-  const runValidation = async () => {
-    setValidationRunning(true);
-    setValidationReport(null);
-    try {
-      const res = await axios.post('/api/validation/run-scenarios');
-      setValidationReport(res.data);
-    } catch (err) {
-      console.error('Validation error:', err);
-    } finally {
-      setValidationRunning(false);
-    }
-  };
-
   const handleToolCtaClick = (card: { toolAction?: string; title: string; url: string }) => {
     if (
       card.toolAction === 'risk-profiler' ||
@@ -508,15 +496,10 @@ export default function App() {
   };
 
   const handleToolResult = (summary: string) => {
-    setMessages(prev => [...prev, {
-      id: Date.now().toString(),
-      role: 'assistant',
-      content: summary,
-    }]);
-    speakText(summary);
-  };
+      handleSend(undefined, `I used the tool and got this response: "${summary}". Please explain what this means for my profile naturally, and suggest if I should look at any related tools or products.`);
+    };
 
-  const summarizeCurrentNews = async () => {
+    const summarizeCurrentNews = async () => {
     if (!sessionId || !selectedArticle || summarizingNews) return;
 
     setSummarizingNews(true);
@@ -729,14 +712,15 @@ export default function App() {
             <span>INDUSTRY</span>
             <span>WEALTH</span>
           </nav>
-          <button
-            onClick={() => { setShowValidation(true); runValidation(); }}
-            className="flex items-center gap-1.5 bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-700 hover:to-indigo-700 text-white text-xs font-bold px-3 py-1.5 rounded-lg shadow-sm transition-all hover:scale-105"
-            title="Run Phase 5 Validation Scenarios"
-          >
-            <FlaskConical size={14} />
-            Validate
-          </button>
+          <div className="flex items-center gap-2 rounded-full border border-gray-200 bg-gray-50 px-2 py-1">
+            <div className="h-8 w-8 rounded-full bg-primary text-white text-xs font-bold flex items-center justify-center">
+              {initialsFromName(activeProfileSummary.name)}
+            </div>
+            <div className="pr-2">
+              <div className="text-xs font-semibold text-gray-800 leading-none">{activeProfileSummary.name}</div>
+              <div className="text-[10px] text-gray-500">Profile active</div>
+            </div>
+          </div>
         </div>
       </header>
 
@@ -956,6 +940,9 @@ export default function App() {
                       {welcomeBackName && (
                         <p className="text-[11px] text-red-100">Welcome back, {welcomeBackName}!</p>
                       )}
+                    </div>
+                    <div className="ml-1 h-8 w-8 rounded-full bg-white/20 border border-white/30 flex items-center justify-center text-[11px] font-bold">
+                      {initialsFromName(activeProfileSummary.name)}
                     </div>
                   </div>
                   <div className="flex gap-2">
@@ -1239,16 +1226,6 @@ export default function App() {
         </div>
       </div>
 
-      {/* ── VALIDATION PANEL MODAL ── */}
-      {showValidation && (
-        <ValidationPanel
-          report={validationReport}
-          running={validationRunning}
-          onClose={() => setShowValidation(false)}
-          onRerun={runValidation}
-        />
-      )}
-
       {activeToolAction && sessionId && (
         <ToolActionModal
           sessionId={sessionId}
@@ -1353,151 +1330,6 @@ function TraceabilityDrawer({
   );
 }
 
-// ─── Validation Panel Component ──────────────────────────
-function ValidationPanel({
-  report,
-  running,
-  onClose,
-  onRerun,
-}: {
-  report: any;
-  running: boolean;
-  onClose: () => void;
-  onRerun: () => void;
-}) {
-  const [expandedScenario, setExpandedScenario] = useState<string | null>(null);
-
-  return (
-    <div className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-center justify-center p-6">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[85vh] flex flex-col overflow-hidden">
-        {/* Header */}
-        <div className="bg-gradient-to-r from-violet-600 to-indigo-600 text-white px-6 py-4 flex justify-between items-center">
-          <div className="flex items-center gap-3">
-            <FlaskConical size={22} />
-            <div>
-              <h2 className="font-bold text-lg">Phase 5 — Validation Scenarios</h2>
-              <p className="text-violet-200 text-xs">Proving true context awareness is real and deterministic</p>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={onRerun}
-              disabled={running}
-              className="bg-white/20 hover:bg-white/30 px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 disabled:opacity-50 transition-all"
-            >
-              <Activity size={14} className={running ? 'animate-spin' : ''} />
-              {running ? 'Running...' : 'Re-Run'}
-            </button>
-            <button onClick={onClose} className="hover:bg-white/20 p-1.5 rounded-lg transition-colors">
-              <X size={20} />
-            </button>
-          </div>
-        </div>
-
-        {/* Body */}
-        <div className="flex-1 overflow-y-auto p-6 custom-scrollbar">
-          {running && !report && (
-            <div className="text-center py-16">
-              <Activity size={40} className="mx-auto text-indigo-400 animate-spin mb-4" />
-              <p className="text-gray-500 font-medium">Running all 4 validation scenarios...</p>
-              <p className="text-gray-400 text-sm mt-1">This exercises the full LangGraph pipeline for each test case</p>
-            </div>
-          )}
-
-          {report && (
-            <>
-              {/* Summary Bar */}
-              <div className="flex items-center gap-4 mb-6 p-4 bg-gradient-to-r from-gray-50 to-slate-50 rounded-xl border">
-                <div className="flex items-center gap-2">
-                  <span className="text-2xl font-black text-gray-900">{report.passed}/{report.totalScenarios}</span>
-                  <span className="text-sm text-gray-500">passed</span>
-                </div>
-                <div className="flex-1 bg-gray-200 rounded-full h-3 overflow-hidden">
-                  <div
-                    className={`h-full rounded-full transition-all duration-700 ${report.failed === 0
-                        ? 'bg-gradient-to-r from-green-400 to-emerald-500'
-                        : 'bg-gradient-to-r from-yellow-400 to-orange-500'
-                      }`}
-                    style={{ width: `${(report.passed / report.totalScenarios) * 100}%` }}
-                  />
-                </div>
-                <div className="text-xs text-gray-400 font-mono">
-                  {new Date(report.timestamp).toLocaleTimeString()}
-                </div>
-              </div>
-
-              {/* Scenario Cards */}
-              <div className="space-y-4">
-                {report.scenarios.map((scenario: any) => (
-                  <div
-                    key={scenario.scenarioId}
-                    className={`border-2 rounded-xl overflow-hidden transition-all ${scenario.passed
-                        ? 'border-green-200 bg-green-50/50'
-                        : 'border-red-200 bg-red-50/50'
-                      }`}
-                  >
-                    {/* Scenario Header */}
-                    <div
-                      className="px-5 py-4 flex items-center justify-between cursor-pointer hover:bg-white/50 transition-colors"
-                      onClick={() => setExpandedScenario(
-                        expandedScenario === scenario.scenarioId ? null : scenario.scenarioId
-                      )}
-                    >
-                      <div className="flex items-center gap-3">
-                        {scenario.passed ? (
-                          <CheckCircle2 size={22} className="text-green-600 shrink-0" />
-                        ) : (
-                          <XCircle size={22} className="text-red-600 shrink-0" />
-                        )}
-                        <div>
-                          <div className="font-bold text-gray-900 text-sm">
-                            [{scenario.scenarioId}] {scenario.name}
-                          </div>
-                          <div className="text-xs text-gray-500 mt-0.5">
-                            {scenario.description}
-                          </div>
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <span className={`text-[11px] font-bold uppercase px-2 py-1 rounded-full ${scenario.passed
-                            ? 'bg-green-200 text-green-800'
-                            : 'bg-red-200 text-red-800'
-                          }`}>
-                          {scenario.passed ? 'PASS' : 'FAIL'}
-                        </span>
-                        {expandedScenario === scenario.scenarioId
-                          ? <ChevronUp size={16} className="text-gray-400" />
-                          : <ChevronDown size={16} className="text-gray-400" />
-                        }
-                      </div>
-                    </div>
-
-                    {/* Evidence Details */}
-                    {expandedScenario === scenario.scenarioId && (
-                      <div className="px-5 pb-4 border-t border-gray-100">
-                        {scenario.error && (
-                          <div className="mt-3 p-3 bg-red-100 border border-red-200 rounded-lg text-xs text-red-800 font-mono">
-                            Error: {scenario.error}
-                          </div>
-                        )}
-                        <div className="mt-3">
-                          <div className="text-[11px] font-bold uppercase text-gray-400 mb-2">Evidence</div>
-                          <pre className="bg-gray-900 text-green-400 p-4 rounded-lg text-[11px] overflow-x-auto font-mono leading-relaxed max-h-[300px] overflow-y-auto custom-scrollbar">
-                            {JSON.stringify(scenario.evidence, null, 2)}
-                          </pre>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
 
 function ToolActionModal({
   sessionId,
@@ -1542,6 +1374,13 @@ function ToolActionModal({
     rent: 30000,
     emis: 18000,
     discretionarySpend: 22000,
+  });
+
+  const [toolNotes, setToolNotes] = useState({
+    risk: '',
+    goal: '',
+    fund: '',
+    spend: '',
   });
 
   const [riskResult, setRiskResult] = useState<any>(null);
@@ -1668,6 +1507,7 @@ function ToolActionModal({
             ...riskForm,
             savingsRatePercent: Number(riskForm.savingsRatePercent),
           },
+          notes: toolNotes.risk.trim() || undefined,
           persistToProfile: true,
         });
         setRiskResult(res.data);
@@ -1683,6 +1523,7 @@ function ToolActionModal({
             timeHorizonMonths: Number(goalForm.timeHorizonMonths),
             currentSavings: Number(goalForm.currentSavings),
           },
+          notes: toolNotes.goal.trim() || undefined,
           persistToProfile: true,
         });
         setGoalResult(res.data);
@@ -1697,6 +1538,7 @@ function ToolActionModal({
             focusTags: fundForm.focusTags.split(',').map((tag) => tag.trim()).filter(Boolean),
             limit: Number(fundForm.limit),
           },
+          notes: toolNotes.fund.trim() || undefined,
           persistToProfile: true,
         });
         setFundResults(res.data.results ?? []);
@@ -1712,6 +1554,7 @@ function ToolActionModal({
             emis: Number(spendForm.emis),
             discretionarySpend: Number(spendForm.discretionarySpend),
           },
+          notes: toolNotes.spend.trim() || undefined,
           persistToProfile: true,
         });
         setSpendResult(res.data);
@@ -1769,6 +1612,14 @@ function ToolActionModal({
                   Next
                 </button>
               </div>
+              <label className="block text-sm font-medium mt-4">Additional Context (optional)
+                <textarea
+                  value={toolNotes.risk}
+                  onChange={(e) => setToolNotes({ ...toolNotes, risk: e.target.value })}
+                  placeholder="Example: first job in Bangalore, stable salary, can handle moderate volatility"
+                  className="w-full mt-1 border rounded px-2 py-2 h-20"
+                />
+              </label>
             </div>
           )}
 
@@ -1785,6 +1636,14 @@ function ToolActionModal({
               </label>
               <label className="block text-sm font-medium">Current Savings
                 <input type="number" value={goalForm.currentSavings} onChange={(e) => setGoalForm({ ...goalForm, currentSavings: Number(e.target.value) })} className="w-full mt-1 border rounded px-2 py-2" />
+              </label>
+              <label className="block text-sm font-medium">Additional Context (optional)
+                <textarea
+                  value={toolNotes.goal}
+                  onChange={(e) => setToolNotes({ ...toolNotes, goal: e.target.value })}
+                  placeholder="Example: expecting yearly salary hike, may increase SIP annually"
+                  className="w-full mt-1 border rounded px-2 py-2 h-20"
+                />
               </label>
 
               {goalResult && (
@@ -1811,6 +1670,14 @@ function ToolActionModal({
               </label>
               <label className="block text-sm">Results Limit
                 <input type="number" min={1} max={10} value={fundForm.limit} onChange={(e) => setFundForm({ ...fundForm, limit: Number(e.target.value) })} className="w-full mt-1 border rounded px-2 py-2" />
+              </label>
+              <label className="block text-sm">Additional Context (optional)
+                <textarea
+                  value={toolNotes.fund}
+                  onChange={(e) => setToolNotes({ ...toolNotes, fund: e.target.value })}
+                  placeholder="Example: avoid high drawdown, prefer tax saving and lower expense ratio"
+                  className="w-full mt-1 border rounded px-2 py-2 h-20"
+                />
               </label>
 
               {fundResults.length > 0 && (
@@ -1843,6 +1710,14 @@ function ToolActionModal({
               </label>
               <label className="block text-sm">Discretionary Spend
                 <input type="number" value={spendForm.discretionarySpend} onChange={(e) => setSpendForm({ ...spendForm, discretionarySpend: Number(e.target.value) })} className="w-full mt-1 border rounded px-2 py-2" />
+              </label>
+              <label className="block text-sm col-span-2">Additional Context (optional)
+                <textarea
+                  value={toolNotes.spend}
+                  onChange={(e) => setToolNotes({ ...toolNotes, spend: e.target.value })}
+                  placeholder="Example: supporting parents, upcoming education expense, want to build emergency fund"
+                  className="w-full mt-1 border rounded px-2 py-2 h-20"
+                />
               </label>
 
               {spendResult && (

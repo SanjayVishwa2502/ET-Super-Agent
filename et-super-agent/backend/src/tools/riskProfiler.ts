@@ -113,6 +113,25 @@ function normalizeToRiskScore(total: number): number {
   return Math.max(1, Math.min(10, Math.round(normalized)));
 }
 
+function normalizeWeightedRiskScore(input: {
+  horizon: number;
+  loss: number;
+  stability: number;
+  savings: number;
+  age: number;
+}): number {
+  // Weighted sum gives better behavioral signal than flat averaging.
+  const weighted =
+    input.horizon * 0.24 +
+    input.loss * 0.28 +
+    input.stability * 0.18 +
+    input.savings * 0.15 +
+    input.age * 0.15;
+
+  const normalized = 1 + ((weighted - 1) / 3) * 9; // weighted range approx 1..4 -> 1..10
+  return Math.max(1, Math.min(10, Math.round(normalized)));
+}
+
 function toRiskLabel(score: number): RiskProfilerResult["riskLabel"] {
   if (score <= 3) return "low";
   if (score <= 7) return "medium";
@@ -127,6 +146,25 @@ function toSuggestedAllocation(label: RiskProfilerResult["riskLabel"]): RiskProf
     return { equity: 55, debt: 35, cash: 10 };
   }
   return { equity: 75, debt: 20, cash: 5 };
+}
+
+function toDynamicAllocation(score: number, incomeStability: RiskProfilerInput["incomeStability"]): RiskProfilerResult["suggestedAllocation"] {
+  const baseEquity = Math.round(15 + ((score - 1) / 9) * 65); // 15..80
+  const stabilityPenalty = incomeStability === "unstable"
+    ? 10
+    : incomeStability === "variable"
+      ? 5
+      : 0;
+
+  const equity = Math.max(15, Math.min(80, baseEquity - stabilityPenalty));
+  const cash = incomeStability === "unstable"
+    ? 15
+    : incomeStability === "variable"
+      ? 10
+      : 5;
+  const debt = Math.max(5, 100 - equity - cash);
+
+  return { equity, debt, cash };
 }
 
 function buildExplanation(input: {
@@ -168,9 +206,18 @@ export function runRiskProfiler(input: RiskProfilerInput): RiskProfilerResult {
     componentScores.savingsRate +
     componentScores.ageBracket;
 
-  const riskScore = normalizeToRiskScore(total);
+  const weightedRiskScore = normalizeWeightedRiskScore({
+    horizon: componentScores.investmentHorizon,
+    loss: componentScores.lossTolerance,
+    stability: componentScores.incomeStability,
+    savings: componentScores.savingsRate,
+    age: componentScores.ageBracket,
+  });
+
+  const blendedScore = Math.round((normalizeToRiskScore(total) + weightedRiskScore) / 2);
+  const riskScore = Math.max(1, Math.min(10, blendedScore));
   const riskLabel = toRiskLabel(riskScore);
-  const suggestedAllocation = toSuggestedAllocation(riskLabel);
+  const suggestedAllocation = toDynamicAllocation(riskScore, input.incomeStability);
 
   return {
     riskScore,

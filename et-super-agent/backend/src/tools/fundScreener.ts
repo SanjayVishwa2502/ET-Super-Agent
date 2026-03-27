@@ -23,6 +23,12 @@ export type FundScreenerResult = {
   totalFundsConsidered: number;
   totalFilteredFunds: number;
   results: ScreenedFund[];
+  scoringModel: {
+    riskFitWeight: number;
+    tagFitWeight: number;
+    feeWeight: number;
+    riskBonusWeight: number;
+  };
 };
 
 function riskRank(level: "low" | "medium" | "high"): number {
@@ -77,6 +83,36 @@ function calculateTagFitScore(benefitTags: string[], focusTags?: string[]): numb
   return Math.min(30, overlap * 10);
 }
 
+function calculateFeeScore(interestOrFee: string): number {
+  const normalized = interestOrFee.toLowerCase();
+  const match = normalized.match(/\d+(?:\.\d+)?/);
+  if (!match) return 5;
+
+  const numeric = Number(match[0]);
+  if (!Number.isFinite(numeric)) return 5;
+
+  if (normalized.includes("expense") || normalized.includes("fee")) {
+    if (numeric <= 0.5) return 15;
+    if (numeric <= 1.0) return 12;
+    if (numeric <= 1.5) return 8;
+    return 4;
+  }
+
+  // If value represents return/yield style wording, reward moderately.
+  if (numeric >= 15) return 12;
+  if (numeric >= 10) return 9;
+  if (numeric >= 6) return 6;
+  return 4;
+}
+
+function calculateDiversificationBonus(tags: string[]): number {
+  const normalized = tags.map((tag) => tag.toLowerCase());
+  const hasDiversifiedTag = normalized.some((tag) =>
+    ["diversified", "index", "large-cap", "large cap", "multi-asset", "balanced"].some((needle) => tag.includes(needle)),
+  );
+  return hasDiversifiedTag ? 5 : 0;
+}
+
 function addRiskPreferenceBonus(input: {
   userRisk: "low" | "medium" | "high";
   fundRisk: "low" | "medium" | "high";
@@ -99,12 +135,17 @@ export function runFundScreener(input: FundScreenerInput): FundScreenerResult {
     });
 
     const tagFitScore = calculateTagFitScore(fund.benefitTags, input.focusTags);
+    const feeScore = calculateFeeScore(fund.interestOrFee);
+    const diversificationBonus = calculateDiversificationBonus(fund.benefitTags);
     const riskBonus = addRiskPreferenceBonus({
       userRisk: input.userRiskProfile,
       fundRisk,
     });
 
-    const matchScore = Math.min(100, riskAssessment.riskFitScore + tagFitScore + riskBonus);
+    const matchScore = Math.min(
+      100,
+      riskAssessment.riskFitScore + tagFitScore + feeScore + diversificationBonus + riskBonus,
+    );
 
     return {
       productId: fund.productId,
@@ -133,5 +174,11 @@ export function runFundScreener(input: FundScreenerInput): FundScreenerResult {
     totalFundsConsidered: mutualFunds.length,
     totalFilteredFunds: sorted.length,
     results: sorted,
+    scoringModel: {
+      riskFitWeight: 70,
+      tagFitWeight: 30,
+      feeWeight: 15,
+      riskBonusWeight: 10,
+    },
   };
 }

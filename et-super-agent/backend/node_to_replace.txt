@@ -1,0 +1,88 @@
+﻿
+> const recommendationAgentNode = async (state: typeof GraphState.State) => {
+    const topic = state.session.pageContext.topic;
+    const intent = state.session.intents[0];
+    const persona = state.session.persona;
+    const educationalTurn = isEducationalQuery(state.message);
+    const shouldShowRecommendations = shouldSurfaceRecommendations({
+      message: state.message,
+      gapLabel: state.gapLabel,
+      profileComplete: state.session.profileComplete,
+      hasArticleContext: Boolean(state.session.pageContext.articleId),
+    });
+  
+    if (!shouldShowRecommendations) {
+      return {
+        recommendations: [],
+        postRecommendationRoute: "response_composer" as 
+PostRecommendationRoute,
+        crossSellReason: "Rule-gated OFF: recommendations deferred until user 
+asks for options or actionable guidance.",
+        route: "response_composer" as Route,
+        fallbackUsed: false,
+        visitedNodes: [...state.visitedNodes, "RecommendationAgent"],
+      };
+    }
+  
+    const latestGoal = inferLatestGoal({
+      message: state.message,
+      pageTopic: topic,
+      fallbackIntent: state.session.latestGoal ?? intent,
+    });
+    const topicHint = educationalTurn ? "basics" : 
+deriveTopicFromGoal(latestGoal, topic);
+  
+    state.session.latestGoal = latestGoal;
+  
+    if (process.env.SIMULATE_KG_UNAVAILABLE === "true") {
+      return {
+        recommendations: buildEmptyCandidateFallbackRecommendations({ topic, 
+intent: latestGoal }),
+        route: "response_composer" as Route,
+        fallbackUsed: true,
+        visitedNodes: [...state.visitedNodes, "RecommendationAgent"],
+      };
+    }
+  
+    // MOCK DB INTEGRATION: If user is low risk, filter out high risk products
+    let allProducts = kgRepository.all();
+    if (state.session.enrichedContext?.user && 
+state.session.enrichedContext?.user.riskAppetite === "low") {
+      allProducts = allProducts.filter(p => !p.riskProfile || p.riskProfile 
+=== "low");
+    }
+  
+    const primaryCandidates = kgRepository.query({ topic: topicHint, intent: 
+latestGoal, limit: 10 });
+  
+    let fallbackCandidates = primaryCandidates.length >= 3
+      ? primaryCandidates
+      : allProducts;
+  
+  
+    const ranked = rankItems(fallbackCandidates, { topic: topicHint, intent: 
+latestGoal, persona });
+  
+    let recommendations: RecommendationCard[] = ranked.map(({ item, score }) 
+=> ({
+      ...(item.type === "tool" ? deriveToolMetadataFromCardId(item.id) : 
+undefined),
+      id: item.id,
+      title: item.title,
+      type: item.type,
+      why: "",
+      cta: item.ctaLabel,
+      url: item.ctaUrl,
+      score,
+    }));
+  
+    if (recommendations.length === 0) {
+      recommendations = buildEmptyCandidateFallbackRecommendations({ topic, 
+intent: latestGoal });
+    }
+  
+    recommendations = applyStrategyTypePreference(
+      recommendations,
+
+
+

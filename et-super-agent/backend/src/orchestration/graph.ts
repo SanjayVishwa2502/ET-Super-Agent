@@ -159,27 +159,32 @@ function buildTransparentWhy(input: {
   return `Aligned to your ${input.latestGoal} goal in ${input.topicHint} context; selected as ${input.cardType} under strategy ${focusText}. ${freshnessText}`;
 }
 
-function composeDeterministicAssistantMessage(input: {
-  userMessage: string;
-  topic: string;
-  intent: string;
-  gapLabel?: GapLabel;
-  recommendations: RecommendationCard[];
-  profileAnswers: Record<string, string>;
-}): string {
-  const msg = input.userMessage.toLowerCase();
-  const name = input.profileAnswers.name;
-  const opener = name ? `${name}, here is the quick take.` : "Here is the quick take.";
+  function composeDeterministicAssistantMessage(input: {
+    userMessage: string;
+    topic: string;
+    intent: string;
+    gapLabel?: GapLabel;
+    recommendations: RecommendationCard[];
+    profileAnswers: Record<string, string>;
+    activeContextHeadline?: string;
+    activeContextUserName?: string;
+  }): string {
+    const msg = input.userMessage.toLowerCase();
+    const name = input.activeContextUserName || input.profileAnswers.name;
+    const opener = name ? `${name}, here is the quick take.` : "Here is the quick take.";
 
-  const isDefinitionQuery = /\b(what is|what's|define|explain|how does .* work)\b/.test(msg);
-  const intentText = input.intent || "financial planning";
-  const topicText = input.topic || "personal finance";
+    const isDefinitionQuery = /\b(what is|what's|define|explain|how does .* work)\b/.test(msg);
+    const intentText = input.intent || "financial planning";
+    const topicText = input.topic || "personal finance";
+    const contextPrefix = input.activeContextHeadline
+      ? `Using your active context` + (input.activeContextUserName ? ` for ${input.activeContextUserName}` : "") + `: ${input.activeContextHeadline}. `
+      : "";
 
   if (isDefinitionQuery) {
     const recHint = input.recommendations[0]?.title
       ? `If you want, I can also connect this to ${input.recommendations[0].title}.`
       : "If you want, I can connect this to a practical next step.";
-    return `${opener} You asked a concept question, so I am focusing on clarity first, then action. In simple terms, this topic fits within ${topicText} and should be evaluated against your risk comfort, time horizon, and liquidity needs. ${recHint}`;
+    return `${opener} ${contextPrefix}You asked a concept question, so I am focusing on clarity first, then action. In simple terms, this topic fits within ${topicText} and should be evaluated against your risk comfort, time horizon, and liquidity needs. ${recHint}`;
   }
 
   const gapHint = input.gapLabel
@@ -191,7 +196,7 @@ function composeDeterministicAssistantMessage(input: {
     ? `I selected ${input.recommendations.length} options across ${recTypes || "tools and products"} to keep the next step practical.`
     : "I can provide practical options once you share a bit more detail on your objective and timeline.";
 
-  return `${opener} Based on your ${intentText} goal in ${topicText} context, ${gapHint} ${recHint}`;
+  return `${opener} ${contextPrefix}Based on your ${intentText} goal in ${topicText} context, ${gapHint} ${recHint}`;
 }
 
 function composeDeterministicNextQuestion(input: { gapLabel?: GapLabel; topic: string }): string {
@@ -205,6 +210,46 @@ function composeDeterministicNextQuestion(input: { gapLabel?: GapLabel; topic: s
     return "Do you want a starter allocation view first, or should I screen options by your risk profile?";
   }
   return `Do you want a quick checklist for ${input.topic}, or a personalized next-step recommendation?`;
+}
+
+function shouldSurfaceRecommendations(input: {
+  message: string;
+  gapLabel?: GapLabel;
+  profileComplete: boolean;
+  hasArticleContext: boolean;
+}): boolean {
+  const normalized = input.message.toLowerCase();
+
+  const recommendationIntent = [
+    "recommend",
+    "suggest",
+    "best option",
+    "which one",
+    "compare",
+    "comparison",
+    "next step",
+    "what should i do",
+    "help me choose",
+    "planner",
+    "tool",
+    "product",
+    "event",
+    "show options",
+    "give me options",
+  ].some((keyword) => normalized.includes(keyword));
+
+  const urgentGap = input.gapLabel === "DEBT_STRESS";
+  const lowSignalPrompt = ["hi", "hello", "hey", "ok", "thanks"].includes(normalized.trim());
+
+  if (lowSignalPrompt) {
+    return false;
+  }
+
+  if (recommendationIntent || urgentGap) {
+    return true;
+  }
+
+  return false;
 }
 
 function deriveToolMetadataFromCardId(cardId: string): Pick<RecommendationCard, "toolId" | "toolAction"> | undefined {
@@ -453,6 +498,7 @@ const GraphState = Annotation.Root({
   assistantMessage: Annotation<string>(),
   nextQuestion: Annotation<string | undefined>(),
   recommendations: Annotation<RecommendationCard[]>(),
+  hiddenRecommendations: Annotation<RecommendationCard[]>(),
   gapLabel: Annotation<GapLabel | undefined>(),
   gapStrategy: Annotation<GapStrategy | undefined>(),
   postRecommendationRoute: Annotation<PostRecommendationRoute>(),
@@ -628,6 +674,7 @@ const recommendationAgentNode = async (state: typeof GraphState.State) => {
   const intent = state.session.intents[0];
   const persona = state.session.persona;
   const educationalTurn = isEducationalQuery(state.message);
+
   const latestGoal = inferLatestGoal({
     message: state.message,
     pageTopic: topic,
@@ -637,72 +684,69 @@ const recommendationAgentNode = async (state: typeof GraphState.State) => {
 
   state.session.latestGoal = latestGoal;
 
+  let computedRecommendations = [];
+  let fallbackIsUsed = false;
+
   if (process.env.SIMULATE_KG_UNAVAILABLE === "true") {
-    return {
-      recommendations: buildEmptyCandidateFallbackRecommendations({ topic, intent: latestGoal }),
-      route: "response_composer" as Route,
-      fallbackUsed: true,
-      visitedNodes: [...state.visitedNodes, "RecommendationAgent"],
-    };
+    computedRecommendations = buildEmptyCandidateFallbackRecommendations({ topic, intent: latestGoal });
+    fallbackIsUsed = true;
+  } else {
+    // MOCK DB INTEGRATION: If user is low risk, filter out high risk products
+    let allProducts = kgRepository.all();
+    if (state.session.enrichedContext?.user && state.session.enrichedContext?.user.riskAppetite === "low") {
+      allProducts = allProducts.filter(p => !p.riskProfile || p.riskProfile === "low");
+    }
+
+    const primaryCandidates = kgRepository.query({ topic: topicHint, intent: latestGoal, limit: 10 });
+    let fallbackCandidates = primaryCandidates.length >= 3 ? primaryCandidates : allProducts;
+
+    const ranked = rankItems(fallbackCandidates, { topic: topicHint, intent: latestGoal, persona });
+    computedRecommendations = ranked.map(({ item, score }) => ({
+      ...(item.type === "tool" ? deriveToolMetadataFromCardId(item.id) : undefined),
+      id: item.id,
+      title: item.title,
+      type: item.type,
+      why: "",
+      cta: item.ctaLabel,
+      url: item.ctaUrl,
+      score,
+    }));
+
+    if (computedRecommendations.length === 0) {
+      computedRecommendations = buildEmptyCandidateFallbackRecommendations({ topic, intent: latestGoal });
+    }
+
+    computedRecommendations = applyStrategyTypePreference(
+      computedRecommendations,
+      state.gapStrategy?.recommendationFocus,
+    );
+
+    computedRecommendations = applySessionHistoryRefinement(
+      computedRecommendations,
+      state.session.recommendationHistory,
+    );
+
+    computedRecommendations = computedRecommendations.slice(0, 3);
+    const seenRecommendationIds = new Set(state.session.recommendationHistory);
+    
+    computedRecommendations = computedRecommendations.map((card) => ({
+      ...card,
+      why: buildTransparentWhy({
+        cardType: card.type,
+        latestGoal,
+        topicHint,
+        strategyFocus: state.gapStrategy?.recommendationFocus,
+        previouslyRecommended: seenRecommendationIds.has(card.id),
+      }),
+    }));
   }
 
-  // MOCK DB INTEGRATION: If user is low risk, filter out high risk products
-  let allProducts = kgRepository.all();
-  if (state.session.enrichedContext?.user && state.session.enrichedContext?.user.riskAppetite === "low") {
-    allProducts = allProducts.filter(p => !p.riskProfile || p.riskProfile === "low");
-  }
-
-  const primaryCandidates = kgRepository.query({ topic: topicHint, intent: latestGoal, limit: 10 });
-
-  let fallbackCandidates = primaryCandidates.length >= 3
-    ? primaryCandidates
-    : allProducts;
-
-
-  const ranked = rankItems(fallbackCandidates, { topic: topicHint, intent: latestGoal, persona });
-
-  let recommendations: RecommendationCard[] = ranked.map(({ item, score }) => ({
-    ...(item.type === "tool" ? deriveToolMetadataFromCardId(item.id) : undefined),
-    id: item.id,
-    title: item.title,
-    type: item.type,
-    why: "",
-    cta: item.ctaLabel,
-    url: item.ctaUrl,
-    score,
-  }));
-
-  if (recommendations.length === 0) {
-    recommendations = buildEmptyCandidateFallbackRecommendations({ topic, intent: latestGoal });
-  }
-
-  recommendations = applyStrategyTypePreference(
-    recommendations,
-    state.gapStrategy?.recommendationFocus,
-  );
-
-  recommendations = applySessionHistoryRefinement(
-    recommendations,
-    state.session.recommendationHistory,
-  );
-
-  recommendations = recommendations.slice(0, 3);
-
-  const seenRecommendationIds = new Set(state.session.recommendationHistory);
-  recommendations = recommendations.map((card) => ({
-    ...card,
-    why: buildTransparentWhy({
-      cardType: card.type,
-      latestGoal,
-      topicHint,
-      strategyFocus: state.gapStrategy?.recommendationFocus,
-      previouslyRecommended: seenRecommendationIds.has(card.id),
-    }),
-  }));
-
-  state.session.recommendationHistory = Array.from(
-    new Set([...state.session.recommendationHistory, ...recommendations.map((item) => item.id)]),
-  ).slice(-20);
+  const shouldShowRecommendations = shouldSurfaceRecommendations({
+    message: state.message,
+    gapLabel: state.gapLabel,
+    profileComplete: state.session.profileComplete,
+    hasArticleContext: Boolean(state.session.pageContext.articleId),
+  });
 
   const serviceIntent =
     !educationalTurn &&
@@ -723,12 +767,29 @@ const recommendationAgentNode = async (state: typeof GraphState.State) => {
       ? "Rule-gated OFF: educational query detected; service cross-sell intentionally suppressed."
       : "Rule-gated OFF: no service-relevant intent detected.";
 
+  if (!shouldShowRecommendations) {
+    return {
+      recommendations: [],
+      hiddenRecommendations: computedRecommendations,
+      postRecommendationRoute: "response_composer" as PostRecommendationRoute,
+      crossSellReason: "Rule-gated OFF: recommendations deferred until user asks for options.",
+      route: "response_composer" as Route,
+      fallbackUsed: fallbackIsUsed,
+      visitedNodes: [...state.visitedNodes, "RecommendationAgent"],
+    };
+  }
+
+  state.session.recommendationHistory = Array.from(
+    new Set([...state.session.recommendationHistory, ...computedRecommendations.map((item) => item.id)]),
+  ).slice(-20);
+
   return {
-    recommendations,
+    recommendations: computedRecommendations,
+    hiddenRecommendations: [],
     postRecommendationRoute: serviceIntent ? "cross_sell_agent" : "response_composer",
     crossSellReason,
     route: "response_composer" as Route,
-    fallbackUsed: recommendations[0]?.id.startsWith("fallback-") ?? false,
+    fallbackUsed: fallbackIsUsed || (computedRecommendations[0]?.id.startsWith("fallback-") ?? false),
     visitedNodes: [...state.visitedNodes, "RecommendationAgent"],
   };
 };
@@ -749,13 +810,6 @@ const responseComposerNode = async (state: typeof GraphState.State) => {
   let recommendations = state.recommendations;
   let fallbackUsed = state.fallbackUsed;
 
-  if (recommendations.length === 0 && state.session.profileComplete) {
-    const topic = state.session.pageContext.topic;
-    const intent = state.session.intents[0];
-    recommendations = buildEmptyCandidateFallbackRecommendations({ topic, intent });
-    fallbackUsed = true;
-  }
-
   if (!assistantMessage) {
     const topic = state.session.pageContext.topic;
     const intent = state.session.intents[0] ?? "guided discovery";
@@ -765,6 +819,8 @@ const responseComposerNode = async (state: typeof GraphState.State) => {
         profileAnswers: state.session.profileAnswers,
         persona: state.session.persona,
         latestGoal: state.session.latestGoal,
+        activeContextHeadline: state.session.enrichedContext?.article?.headline,
+        activeContextUserName: state.session.enrichedContext?.user?.name,
       }),
       GAP_CONTEXT: JSON.stringify({
         label: state.gapLabel,
@@ -773,6 +829,9 @@ const responseComposerNode = async (state: typeof GraphState.State) => {
       RECOMMENDATIONS_CONTEXT: JSON.stringify(
         recommendations.map((rec) => ({ title: rec.title, type: rec.type, why: rec.why })),
       ),
+      HIDDEN_RECOMMENDATIONS_CONTEXT: state.hiddenRecommendations && state.hiddenRecommendations.length > 0 
+        ? JSON.stringify(state.hiddenRecommendations.map((rec) => ({ title: rec.title, type: rec.type, why: rec.why })))
+        : "None",
       HISTORY_CONTEXT: JSON.stringify(state.session.history.slice(-8)),
     });
 
@@ -792,13 +851,17 @@ const responseComposerNode = async (state: typeof GraphState.State) => {
         gapLabel: state.gapLabel,
         recommendations,
         profileAnswers: state.session.profileAnswers,
+        activeContextHeadline: state.session.enrichedContext?.article?.headline,
+        activeContextUserName: state.session.enrichedContext?.user?.name,
       });
     }
 
-    nextQuestion = composeDeterministicNextQuestion({
-      gapLabel: state.gapLabel,
-      topic,
-    });
+    nextQuestion = recommendations.length > 0
+      ? composeDeterministicNextQuestion({
+        gapLabel: state.gapLabel,
+        topic,
+      })
+      : "Would you like me to suggest specific tools, products, or events for this?";
   }
 
   if (state.crossSellTriggered && state.crossSellTemplate) {
