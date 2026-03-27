@@ -1,0 +1,842 @@
+import { Annotation, END, START, StateGraph } from "@langchain/langgraph";
+import { KGRepository } from "../data/kgRepository.js";
+import { rankItems } from "../data/scoring.js";
+import { detectGapDecision, GapLabel, GapStrategy, getGapStrategy } from "./navigator.js";
+import { CrossSellTemplate, getCrossSellTemplate } from "./crossSellTemplates.js";
+import { assessScenario, ScenarioAssessment } from "../scenarios/scenarioGuard.js";
+import { llm } from "../services/llmService.js";
+import { CONCIERGE_SYSTEM_PROMPT, PROFILE_EXTRACTION_PROMPT, RESPONSE_COMPOSER_PROMPT, fillPromptTemplate } from "../services/llmPrompts.js";
+import { RecommendationCard, UserSession } from "../types.js";
+
+type Route = "concierge_agent" | "navigator_agent" | "recommendation_agent" | "response_composer";
+type PostRecommendationRoute = "cross_sell_agent" | "response_composer";
+
+const kgRepository = KGRepository.fromFile();
+
+function applyStrategyTypePreference(
+  recommendations: RecommendationCard[],
+  focusOrder?: Array<"product" | "tool" | "event" | "service">,
+): RecommendationCard[] {
+  if (!focusOrder || focusOrder.length === 0) {
+    return recommendations;
+  }
+
+  const selected: RecommendationCard[] = [];
+  const used = new Set<string>();
+
+  for (const preferredType of focusOrder) {
+    const candidate = recommendations.find(
+      (item) => item.type === preferredType && !used.has(item.id),
+    );
+    if (candidate) {
+      selected.push(candidate);
+      used.add(candidate.id);
+    }
+  }
+
+  for (const item of recommendations) {
+    if (selected.length >= 3) {
+      break;
+    }
+    if (!used.has(item.id)) {
+      selected.push(item);
+      used.add(item.id);
+    }
+  }
+
+  return selected.slice(0, 3);
+}
+
+function inferLatestGoal(input: { message: string; pageTopic: string; fallbackIntent?: string }): string {
+  const messageText = input.message.toLowerCase();
+  const pageTopicText = input.pageTopic.toLowerCase();
+
+  if (messageText.includes("debt") || messageText.includes("credit card") || messageText.includes("loan")) {
+    return "debt reduction";
+  }
+  if (messageText.includes("inflation") || messageText.includes("fd") || messageText.includes("fixed deposit")) {
+    return "beat inflation";
+  }
+  if (messageText.includes("tax")) {
+    return "tax planning";
+  }
+  if (messageText.includes("invest") || messageText.includes("portfolio")) {
+    return "portfolio diversification";
+  }
+
+  if (pageTopicText.includes("debt") || pageTopicText.includes("credit") || pageTopicText.includes("loan")) {
+    return "debt reduction";
+  }
+  if (pageTopicText.includes("inflation") || pageTopicText.includes("fd") || pageTopicText.includes("fixed deposit")) {
+    return "beat inflation";
+  }
+  if (pageTopicText.includes("tax")) {
+    return "tax planning";
+  }
+  if (pageTopicText.includes("invest") || pageTopicText.includes("portfolio")) {
+    return "portfolio diversification";
+  }
+
+  return input.fallbackIntent ?? "guided discovery";
+}
+
+function deriveTopicFromGoal(goal: string, fallbackTopic: string): string {
+  const normalized = goal.toLowerCase();
+  if (normalized.includes("tax")) {
+    return "tax";
+  }
+  if (normalized.includes("debt") || normalized.includes("loan") || normalized.includes("credit card")) {
+    return "debt";
+  }
+  if (normalized.includes("inflation")) {
+    return "inflation";
+  }
+  if (normalized.includes("portfolio") || normalized.includes("invest")) {
+    return "portfolio";
+  }
+  return fallbackTopic;
+}
+
+function applySessionHistoryRefinement(
+  recommendations: RecommendationCard[],
+  previouslyRecommendedIds: string[],
+): RecommendationCard[] {
+  const seen = new Set(previouslyRecommendedIds);
+  const orderIndex = new Map<string, number>(recommendations.map((item, index) => [item.id, index]));
+
+  return [...recommendations].sort((a, b) => {
+    const aSeen = seen.has(a.id) ? 1 : 0;
+    const bSeen = seen.has(b.id) ? 1 : 0;
+    if (aSeen !== bSeen) {
+      return aSeen - bSeen;
+    }
+    return (orderIndex.get(a.id) ?? 0) - (orderIndex.get(b.id) ?? 0);
+  });
+}
+
+function buildTransparentWhy(input: {
+  cardType: RecommendationCard["type"];
+  latestGoal: string;
+  topicHint: string;
+  strategyFocus?: Array<"product" | "tool" | "event" | "service">;
+  previouslyRecommended: boolean;
+}): string {
+  const focusText = input.strategyFocus && input.strategyFocus.length > 0
+    ? input.strategyFocus.join(" > ")
+    : "score-based";
+
+  const freshnessText = input.previouslyRecommended
+    ? "Shown earlier in this session and retained due to high relevance."
+    : "New for this session to improve follow-up variety.";
+
+  return `Aligned to your ${input.latestGoal} goal in ${input.topicHint} context; selected as ${input.cardType} under strategy ${focusText}. ${freshnessText}`;
+}
+
+function deriveToolMetadataFromCardId(cardId: string): Pick<RecommendationCard, "toolId" | "toolAction"> | undefined {
+  if (cardId === "tool-risk-profiler") {
+    return { toolId: cardId, toolAction: "risk-profiler" };
+  }
+  if (cardId === "tool-markets-diversification-check") {
+    return { toolId: cardId, toolAction: "goal-planner" };
+  }
+  if (cardId === "tool-markets-tax-saving-funds") {
+    return { toolId: cardId, toolAction: "fund-screener" };
+  }
+  if (cardId === "tool-cards-spend-analyzer") {
+    return { toolId: cardId, toolAction: "spend-analyzer" };
+  }
+  return undefined;
+}
+
+export function buildEmptyCandidateFallbackRecommendations(input: {
+  topic: string;
+  intent?: string;
+}): RecommendationCard[] {
+  const intent = input.intent ?? "guided discovery";
+  const topic = input.topic;
+
+  return [
+    {
+      id: "fallback-prime-finance-basics",
+      title: "ET Prime: Personal Finance Basics",
+      type: "product",
+      why: `No exact matches were found for ${topic}, so this is a reliable starting point for ${intent}.`,
+      cta: "Open Finance Basics",
+      url: "https://example.et/prime/personal-finance-basics",
+      score: 0.35,
+    },
+    {
+      id: "fallback-markets-get-started",
+      title: "ET Markets: Getting Started Toolkit",
+      type: "tool",
+      why: "Provides beginner-safe market exploration while we refine your preferences.",
+      cta: "Open Markets Toolkit",
+      url: "https://example.et/markets/getting-started",
+      score: 0.34,
+    },
+    {
+      id: "fallback-masterclass-finance-foundations",
+      title: "ET Masterclass: Finance Foundations",
+      type: "event",
+      why: "Helps establish core decision frameworks before deeper recommendations.",
+      cta: "Register for Foundations Session",
+      url: "https://example.et/events/finance-foundations",
+      score: 0.33,
+    },
+  ];
+}
+
+type ProfileField = "name" | "incomeRange" | "riskPreference" | "topGoal" | "loanStatus";
+
+const REQUIRED_PROFILE_FIELDS: ProfileField[] = ["name", "incomeRange", "riskPreference", "topGoal"];
+const PROFILE_QUESTION_FLOW: ProfileField[] = ["incomeRange", "riskPreference", "topGoal", "loanStatus", "name"];
+const PROFILE_QUESTIONS: Record<ProfileField, string> = {
+  name: "Before we continue, what should I call you?",
+  incomeRange: "To personalize this well, which income or age bracket best describes you right now?",
+  riskPreference: "How would you describe your risk comfort: low, medium, or high?",
+  topGoal: "What is your top goal at the moment: tax planning, investing, debt reduction, savings, or wealth creation?",
+  loanStatus: "Do you currently have active loans or credit card dues?",
+};
+
+function sanitizeName(name: string): string {
+  return name.trim().replace(/[^a-zA-Z\s]/g, "").split(" ")[0] ?? "";
+}
+
+function normalizeIncomeRange(raw: string): string {
+  const value = raw.toLowerCase();
+  if (value.includes("below") && value.includes("5")) return "below-5LPA";
+  if (value.includes("5") && value.includes("10")) return "5-10LPA";
+  if (value.includes("10") && value.includes("15")) return "10-15LPA";
+  if (value.includes("15") && value.includes("25")) return "15-25LPA";
+  if (value.includes("30")) return "30LPA+";
+  if (value.includes("25")) return "25LPA+";
+  return raw.trim();
+}
+
+function normalizeRiskPreference(raw: string): string {
+  const value = raw.toLowerCase();
+  if (value.includes("low") || value.includes("conservative")) return "low";
+  if (value.includes("high") || value.includes("aggressive")) return "high";
+  if (value.includes("medium") || value.includes("moderate")) return "medium";
+  return raw.trim();
+}
+
+function normalizeTopGoal(raw: string): string {
+  const value = raw.toLowerCase();
+  if (value.includes("tax")) return "tax_planning";
+  if (value.includes("debt") || value.includes("loan")) return "debt_reduction";
+  if (value.includes("invest") || value.includes("portfolio")) return "investing";
+  if (value.includes("insurance")) return "insurance";
+  if (value.includes("retirement")) return "retirement_planning";
+  if (value.includes("wealth")) return "wealth_creation";
+  if (value.includes("saving")) return "savings";
+  return raw.trim();
+}
+
+function mapGoalToIntent(goal: string): string {
+  const value = goal.toLowerCase();
+  if (value.includes("tax")) return "tax planning";
+  if (value.includes("debt") || value.includes("loan")) return "debt reduction";
+  if (value.includes("invest")) return "portfolio diversification";
+  if (value.includes("insurance")) return "insurance planning";
+  return "guided discovery";
+}
+
+function heuristicExtractProfileAnswers(message: string): Partial<Record<ProfileField, string>> {
+  const lower = message.toLowerCase();
+  const extracted: Partial<Record<ProfileField, string>> = {};
+
+  const nameMatch = message.match(/(?:my name is|i am|i'm)\s+([a-zA-Z][a-zA-Z\s]*)/i);
+  if (nameMatch?.[1]) {
+    const parsedName = sanitizeName(nameMatch[1]);
+    if (parsedName) {
+      extracted.name = parsedName;
+    }
+  }
+
+  if (/(\b5\s*[-to]{1,3}\s*10\b|5\s*lpa|10\s*lpa)/i.test(message)) extracted.incomeRange = "5-10LPA";
+  else if (/(\b10\s*[-to]{1,3}\s*15\b|12\s*lakh|12\s*lpa)/i.test(message)) extracted.incomeRange = "10-15LPA";
+  else if (/(\b15\s*[-to]{1,3}\s*25\b|20\s*lakh|20\s*lpa)/i.test(message)) extracted.incomeRange = "15-25LPA";
+  else if (/(30\s*lakh|30\s*lpa|high income)/i.test(message)) extracted.incomeRange = "30LPA+";
+
+  if (lower.includes("conservative") || lower.includes("low risk")) extracted.riskPreference = "low";
+  else if (lower.includes("moderate") || lower.includes("medium risk")) extracted.riskPreference = "medium";
+  else if (lower.includes("aggressive") || lower.includes("high risk")) extracted.riskPreference = "high";
+
+  if (lower.includes("tax")) extracted.topGoal = "tax_planning";
+  else if (lower.includes("debt") || lower.includes("loan")) extracted.topGoal = "debt_reduction";
+  else if (lower.includes("invest") || lower.includes("portfolio")) extracted.topGoal = "investing";
+  else if (lower.includes("insurance")) extracted.topGoal = "insurance";
+  else if (lower.includes("retirement")) extracted.topGoal = "retirement_planning";
+  else if (lower.includes("save")) extracted.topGoal = "savings";
+
+  if (lower.includes("loan") || lower.includes("emi") || lower.includes("credit card due") || lower.includes("debt")) {
+    extracted.loanStatus = "has_loans";
+  } else if (lower.includes("no loan") || lower.includes("no debt")) {
+    extracted.loanStatus = "no_loans";
+  }
+
+  return extracted;
+}
+
+async function llmExtractProfileAnswers(input: {
+  message: string;
+  history: Array<{ role: "user" | "assistant"; content: string }>;
+}): Promise<Partial<Record<ProfileField, string>>> {
+  const prompt = fillPromptTemplate(PROFILE_EXTRACTION_PROMPT, {
+    MESSAGE: input.message,
+    CONTEXT: JSON.stringify(input.history.slice(-6)),
+  });
+
+  const response = await llm.complete(
+    "Extract profile fields from user text and return only JSON.",
+    prompt,
+    { temperature: 0.1, maxTokens: 220 },
+  );
+
+  if (response.fallback || !response.content) {
+    return {};
+  }
+
+  try {
+    const start = response.content.indexOf("{");
+    const end = response.content.lastIndexOf("}");
+    if (start === -1 || end === -1 || end <= start) {
+      return {};
+    }
+
+    const payload = JSON.parse(response.content.slice(start, end + 1)) as Record<string, unknown>;
+    const mapped: Partial<Record<ProfileField, string>> = {};
+
+    if (typeof payload.name === "string" && payload.name.trim()) {
+      mapped.name = sanitizeName(payload.name);
+    }
+    if (typeof payload.incomeRange === "string" && payload.incomeRange.trim()) {
+      mapped.incomeRange = normalizeIncomeRange(payload.incomeRange);
+    }
+    if (typeof payload.riskPreference === "string" && payload.riskPreference.trim()) {
+      mapped.riskPreference = normalizeRiskPreference(payload.riskPreference);
+    }
+    if (typeof payload.topGoal === "string" && payload.topGoal.trim()) {
+      mapped.topGoal = normalizeTopGoal(payload.topGoal);
+    }
+    if (typeof payload.hasLoans === "boolean") {
+      mapped.loanStatus = payload.hasLoans ? "has_loans" : "no_loans";
+    }
+
+    return mapped;
+  } catch {
+    return {};
+  }
+}
+
+function getFirstMissingField(answers: Record<string, string>): ProfileField | undefined {
+  return PROFILE_QUESTION_FLOW.find((field) => !answers[field]);
+}
+
+function buildProfileFallbackMessage(input: {
+  firstName?: string;
+  nextField: ProfileField;
+  hasAnyProfile: boolean;
+}): string {
+  const greeting = input.firstName
+    ? `Great to meet you, ${input.firstName}.`
+    : input.hasAnyProfile
+      ? "Thanks for sharing that."
+      : "Hi, welcome to ET Super Agent.";
+
+  return `${greeting} ${PROFILE_QUESTIONS[input.nextField]}`;
+}
+
+async function buildConciergeMessageWithLlm(input: {
+  session: UserSession;
+  userMessage: string;
+  instruction: string;
+}): Promise<string | undefined> {
+  const systemPrompt = fillPromptTemplate(CONCIERGE_SYSTEM_PROMPT, {
+    USER_CONTEXT: JSON.stringify(input.session.profileAnswers),
+  });
+
+  const response = await llm.conversationalComplete(
+    systemPrompt,
+    input.session.history,
+    `${input.userMessage}\n\n${input.instruction}`,
+    { temperature: 0.4, maxTokens: 140 },
+  );
+
+  if (response.fallback || !response.content.trim()) {
+    return undefined;
+  }
+
+  return response.content.trim();
+}
+
+const GraphState = Annotation.Root({
+  message: Annotation<string>(),
+  session: Annotation<UserSession>(),
+  route: Annotation<Route>(),
+  assistantMessage: Annotation<string>(),
+  nextQuestion: Annotation<string | undefined>(),
+  recommendations: Annotation<RecommendationCard[]>(),
+  gapLabel: Annotation<GapLabel | undefined>(),
+  gapStrategy: Annotation<GapStrategy | undefined>(),
+  postRecommendationRoute: Annotation<PostRecommendationRoute>(),
+  crossSellTriggered: Annotation<boolean>(),
+  crossSellTemplate: Annotation<CrossSellTemplate | undefined>(),
+  crossSellReason: Annotation<string | undefined>(),
+  visitedNodes: Annotation<string[]>(),
+  fallbackUsed: Annotation<boolean>(),
+  scenarioAssessment: Annotation<ScenarioAssessment>(),
+});
+
+function isProfileComplete(session: UserSession): boolean {
+  return session.profileComplete === true;
+}
+
+const inputRouterNode = async (state: typeof GraphState.State) => {
+  const route: Route = isProfileComplete(state.session) ? "navigator_agent" : "concierge_agent";
+  return {
+    route,
+    visitedNodes: [...state.visitedNodes, "InputRouter"],
+  };
+};
+
+const scenarioGuardNode = async (state: typeof GraphState.State) => {
+  const assessment = assessScenario(state.message);
+
+  if (assessment.category !== "out_of_scope") {
+    return {
+      route: "concierge_agent" as Route,
+      scenarioAssessment: assessment,
+      visitedNodes: [...state.visitedNodes, "ScenarioGuard"],
+    };
+  }
+
+  return {
+    route: "response_composer" as Route,
+    assistantMessage: assessment.suggestedClarification,
+    nextQuestion: "Share one line on your financial goal and current concern.",
+    scenarioAssessment: assessment,
+    visitedNodes: [...state.visitedNodes, "ScenarioGuard"],
+  };
+};
+
+const conciergeAgentNode = async (state: typeof GraphState.State) => {
+  const existingAnswers = { ...(state.session.profileAnswers ?? {}) };
+  const hasAnyProfile = Object.keys(existingAnswers).length > 0;
+
+  if (state.session.enrichedContext?.user) {
+    const ctxUser = state.session.enrichedContext.user;
+    if (!existingAnswers.name) {
+      existingAnswers.name = sanitizeName(ctxUser.name);
+    }
+    if (!existingAnswers.incomeRange) {
+      existingAnswers.incomeRange = ctxUser.incomeBand;
+    }
+    if (!existingAnswers.riskPreference) {
+      existingAnswers.riskPreference = normalizeRiskPreference(ctxUser.riskAppetite);
+    }
+    if (!existingAnswers.topGoal && ctxUser.goals.length > 0) {
+      existingAnswers.topGoal = normalizeTopGoal(ctxUser.goals[0]);
+    }
+    if (!existingAnswers.loanStatus) {
+      existingAnswers.loanStatus = ctxUser.activeLoans.length > 0 ? "has_loans" : "no_loans";
+    }
+  }
+
+  const heuristicAnswers = heuristicExtractProfileAnswers(state.message);
+  for (const [key, value] of Object.entries(heuristicAnswers)) {
+    if (value) {
+      existingAnswers[key] = value;
+    }
+  }
+
+  const llmAnswers = await llmExtractProfileAnswers({
+    message: state.message,
+    history: state.session.history,
+  });
+  for (const [key, value] of Object.entries(llmAnswers)) {
+    if (value) {
+      existingAnswers[key] = value;
+    }
+  }
+
+  state.session.profileAnswers = existingAnswers;
+  state.session.profileComplete = REQUIRED_PROFILE_FIELDS.every((field) => Boolean(existingAnswers[field]));
+
+  if (!state.session.profileComplete) {
+    const nextField = getFirstMissingField(existingAnswers) ?? "incomeRange";
+    const firstName = existingAnswers.name;
+
+    const fallbackMessage = buildProfileFallbackMessage({
+      firstName,
+      nextField,
+      hasAnyProfile,
+    });
+
+    const llmMessage = await buildConciergeMessageWithLlm({
+      session: state.session,
+      userMessage: state.message,
+      instruction: `Continue profiling. Ask exactly one question for the next field: ${nextField}. If name is known, use it naturally.`,
+    });
+
+    return {
+      session: state.session,
+      assistantMessage: llmMessage ?? fallbackMessage,
+      nextQuestion: undefined,
+      recommendations: [],
+      route: "response_composer" as Route,
+      visitedNodes: [...state.visitedNodes, "ConciergeAgent"],
+    };
+  }
+
+  const risk = (existingAnswers.riskPreference ?? "").toLowerCase();
+  state.session.persona = risk === "high"
+    ? "High Net Worth"
+    : risk === "low"
+      ? "Conservative Wealth Builder"
+      : "Balanced Planner";
+
+  const inferredIntent = mapGoalToIntent(existingAnswers.topGoal ?? "guided_discovery");
+  state.session.intents = Array.from(new Set([...state.session.intents, inferredIntent]));
+  state.session.latestGoal = inferredIntent;
+
+  const completionFallback = existingAnswers.name
+    ? `Perfect, ${existingAnswers.name}. I have your profile and I am now tailoring recommendations to your goals.`
+    : "Perfect, I have your profile and I am now tailoring recommendations to your goals.";
+
+  const completionLlmMessage = await buildConciergeMessageWithLlm({
+    session: state.session,
+    userMessage: state.message,
+    instruction: "Acknowledge profile completion and transition to personalized recommendations in one concise response.",
+  });
+
+  return {
+    session: state.session,
+    assistantMessage: completionLlmMessage ?? completionFallback,
+    nextQuestion: undefined,
+    route: "navigator_agent" as Route,
+    visitedNodes: [...state.visitedNodes, "ConciergeAgent"],
+  };
+};
+
+const navigatorAgentNode = async (state: typeof GraphState.State) => {
+  const gapDecision = await detectGapDecision({
+    message: state.message,
+    session: state.session,
+  });
+  const gapLabel = gapDecision.label;
+  const gapStrategy = getGapStrategy(gapLabel, gapDecision.recommendationFocus);
+
+  return {
+    gapLabel,
+    gapStrategy,
+    route: "recommendation_agent" as Route,
+    visitedNodes: [...state.visitedNodes, "NavigatorAgent"],
+  };
+};
+
+const recommendationAgentNode = async (state: typeof GraphState.State) => {
+  const topic = state.session.pageContext.topic;
+  const intent = state.session.intents[0];
+  const persona = state.session.persona;
+  const latestGoal = inferLatestGoal({
+    message: state.message,
+    pageTopic: topic,
+    fallbackIntent: state.session.latestGoal ?? intent,
+  });
+  const topicHint = deriveTopicFromGoal(latestGoal, topic);
+
+  state.session.latestGoal = latestGoal;
+
+  if (process.env.SIMULATE_KG_UNAVAILABLE === "true") {
+    return {
+      recommendations: buildEmptyCandidateFallbackRecommendations({ topic, intent: latestGoal }),
+      route: "response_composer" as Route,
+      fallbackUsed: true,
+      visitedNodes: [...state.visitedNodes, "RecommendationAgent"],
+    };
+  }
+
+  // MOCK DB INTEGRATION: If user is low risk, filter out high risk products
+  let allProducts = kgRepository.all();
+  if (state.session.enrichedContext?.user && state.session.enrichedContext?.user.riskAppetite === "low") {
+    allProducts = allProducts.filter(p => !p.riskProfile || p.riskProfile === "low");
+  }
+
+  const primaryCandidates = kgRepository.query({ topic: topicHint, intent: latestGoal, limit: 10 });
+
+  let fallbackCandidates = primaryCandidates.length >= 3
+    ? primaryCandidates
+    : allProducts;
+
+
+  const ranked = rankItems(fallbackCandidates, { topic: topicHint, intent: latestGoal, persona });
+
+  let recommendations: RecommendationCard[] = ranked.map(({ item, score }) => ({
+    ...(item.type === "tool" ? deriveToolMetadataFromCardId(item.id) : undefined),
+    id: item.id,
+    title: item.title,
+    type: item.type,
+    why: "",
+    cta: item.ctaLabel,
+    url: item.ctaUrl,
+    score,
+  }));
+
+  if (recommendations.length === 0) {
+    recommendations = buildEmptyCandidateFallbackRecommendations({ topic, intent: latestGoal });
+  }
+
+  recommendations = applyStrategyTypePreference(
+    recommendations,
+    state.gapStrategy?.recommendationFocus,
+  );
+
+  recommendations = applySessionHistoryRefinement(
+    recommendations,
+    state.session.recommendationHistory,
+  );
+
+  recommendations = recommendations.slice(0, 3);
+
+  const seenRecommendationIds = new Set(state.session.recommendationHistory);
+  recommendations = recommendations.map((card) => ({
+    ...card,
+    why: buildTransparentWhy({
+      cardType: card.type,
+      latestGoal,
+      topicHint,
+      strategyFocus: state.gapStrategy?.recommendationFocus,
+      previouslyRecommended: seenRecommendationIds.has(card.id),
+    }),
+  }));
+
+  state.session.recommendationHistory = Array.from(
+    new Set([...state.session.recommendationHistory, ...recommendations.map((item) => item.id)]),
+  ).slice(-20);
+
+  const serviceIntent =
+    state.gapLabel === "DEBT_STRESS" ||
+    [state.message, state.session.intents[0] ?? ""].some((value) => {
+      const normalized = value.toLowerCase();
+      return (
+        normalized.includes("debt") ||
+        normalized.includes("loan") ||
+        normalized.includes("credit card") ||
+        normalized.includes("card comparison")
+      );
+    });
+
+  const crossSellReason = serviceIntent
+    ? "Rule-gated ON: service-relevant intent detected (DEBT_STRESS/loan/debt context)."
+    : "Rule-gated OFF: no service-relevant intent detected.";
+
+  return {
+    recommendations,
+    postRecommendationRoute: serviceIntent ? "cross_sell_agent" : "response_composer",
+    crossSellReason,
+    route: "response_composer" as Route,
+    fallbackUsed: recommendations[0]?.id.startsWith("fallback-") ?? false,
+    visitedNodes: [...state.visitedNodes, "RecommendationAgent"],
+  };
+};
+
+const crossSellAgentNode = async (state: typeof GraphState.State) => {
+  const template = getCrossSellTemplate(state.gapLabel);
+
+  return {
+    crossSellTriggered: true,
+    crossSellTemplate: template,
+    visitedNodes: [...state.visitedNodes, "CrossSellAgent"],
+  };
+};
+
+const responseComposerNode = async (state: typeof GraphState.State) => {
+  let assistantMessage = state.assistantMessage;
+  let nextQuestion = state.nextQuestion;
+  let recommendations = state.recommendations;
+  let fallbackUsed = state.fallbackUsed;
+
+  if (recommendations.length === 0 && state.session.profileComplete) {
+    const topic = state.session.pageContext.topic;
+    const intent = state.session.intents[0];
+    recommendations = buildEmptyCandidateFallbackRecommendations({ topic, intent });
+    fallbackUsed = true;
+  }
+
+  if (!assistantMessage) {
+    const topic = state.session.pageContext.topic;
+    const intent = state.session.intents[0] ?? "guided discovery";
+
+    const responsePrompt = fillPromptTemplate(RESPONSE_COMPOSER_PROMPT, {
+      USER_CONTEXT: JSON.stringify({
+        profileAnswers: state.session.profileAnswers,
+        persona: state.session.persona,
+        latestGoal: state.session.latestGoal,
+      }),
+      GAP_CONTEXT: JSON.stringify({
+        label: state.gapLabel,
+        strategy: state.gapStrategy,
+      }),
+      RECOMMENDATIONS_CONTEXT: JSON.stringify(
+        recommendations.map((rec) => ({ title: rec.title, type: rec.type, why: rec.why })),
+      ),
+      HISTORY_CONTEXT: JSON.stringify(state.session.history.slice(-8)),
+    });
+
+    const llmResponse = await llm.complete(
+      responsePrompt,
+      `Latest user message: ${state.message}`,
+      { temperature: 0.5, maxTokens: 220 },
+    );
+
+    if (!llmResponse.fallback && llmResponse.content.trim()) {
+      assistantMessage = llmResponse.content.trim();
+    } else if (state.recommendations.length > 0) {
+      assistantMessage = `Based on your ${intent} goal and ${topic} context, here are the top ET recommendations for you.`;
+    } else {
+      assistantMessage = `Based on your ${intent} goal and ${topic} context, I can now recommend the best ET next steps.`;
+    }
+
+    nextQuestion = "Should I prioritize ET Prime content, ET Markets tools, or service comparisons?";
+  }
+
+  if (state.crossSellTriggered && state.crossSellTemplate) {
+    assistantMessage = `${assistantMessage} ${state.crossSellTemplate.message}`;
+  }
+
+  return {
+    assistantMessage,
+    nextQuestion,
+    recommendations,
+    fallbackUsed,
+    visitedNodes: [...state.visitedNodes, "ResponseComposer"],
+  };
+};
+
+const graph = new StateGraph(GraphState)
+  .addNode("scenario_guard", scenarioGuardNode)
+  .addNode("input_router", inputRouterNode)
+  .addNode("concierge_agent", conciergeAgentNode)
+  .addNode("navigator_agent", navigatorAgentNode)
+  .addNode("recommendation_agent", recommendationAgentNode)
+  .addNode("cross_sell_agent", crossSellAgentNode)
+  .addNode("response_composer", responseComposerNode)
+  .addEdge(START, "scenario_guard")
+  .addConditionalEdges(
+    "scenario_guard",
+    (state) => state.route,
+    {
+      concierge_agent: "input_router",
+      response_composer: "response_composer",
+    },
+  )
+  .addConditionalEdges(
+    "input_router",
+    (state) => state.route,
+    {
+      concierge_agent: "concierge_agent",
+      navigator_agent: "navigator_agent",
+      recommendation_agent: "recommendation_agent",
+      response_composer: "response_composer",
+    },
+  )
+  .addConditionalEdges(
+    "concierge_agent",
+    (state) => state.route,
+    {
+      navigator_agent: "navigator_agent",
+      response_composer: "response_composer",
+    },
+  )
+  .addEdge("navigator_agent", "recommendation_agent")
+  .addConditionalEdges(
+    "recommendation_agent",
+    (state) => state.postRecommendationRoute,
+    {
+      cross_sell_agent: "cross_sell_agent",
+      response_composer: "response_composer",
+    },
+  )
+  .addEdge("cross_sell_agent", "response_composer")
+  .addEdge("response_composer", END);
+
+const compiledGraph = graph.compile();
+
+export async function runConversationGraph(input: {
+  session: UserSession;
+  message: string;
+}): Promise<{
+  assistantMessage: string;
+  nextQuestion?: string;
+  recommendations: RecommendationCard[];
+  gapLabel?: GapLabel;
+  gapStrategy?: GapStrategy;
+  crossSellTriggered: boolean;
+  crossSellTemplate?: CrossSellTemplate;
+  crossSellReason?: string;
+  visitedNodes: string[];
+  fallbackUsed: boolean;
+  scenarioAssessment: ScenarioAssessment;
+  updatedSession: UserSession;
+}> {
+  try {
+    const result = await compiledGraph.invoke({
+      message: input.message,
+      session: input.session,
+      route: "concierge_agent",
+      assistantMessage: "",
+      nextQuestion: undefined,
+      recommendations: [],
+      gapLabel: undefined,
+      gapStrategy: undefined,
+      postRecommendationRoute: "response_composer",
+      crossSellTriggered: false,
+      crossSellTemplate: undefined,
+      crossSellReason: undefined,
+      visitedNodes: [],
+      fallbackUsed: false,
+      scenarioAssessment: {
+        category: "known",
+        confidence: 0.5,
+        reason: "Default placeholder",
+      },
+    });
+
+    return {
+      assistantMessage: result.assistantMessage,
+      nextQuestion: result.nextQuestion,
+      recommendations: result.recommendations,
+      gapLabel: result.gapLabel,
+      gapStrategy: result.gapStrategy,
+      crossSellTriggered: result.crossSellTriggered,
+      crossSellTemplate: result.crossSellTemplate,
+      crossSellReason: result.crossSellReason,
+      visitedNodes: result.visitedNodes,
+      fallbackUsed: result.fallbackUsed,
+      scenarioAssessment: result.scenarioAssessment,
+      updatedSession: result.session,
+    };
+  } catch {
+    return {
+      assistantMessage:
+        "I hit a routing issue, so I am using a safe fallback recommendation flow.",
+      nextQuestion: "Tell me your top priority: tax planning, investing, or debt reduction.",
+      recommendations: [],
+      gapLabel: undefined,
+      gapStrategy: undefined,
+      crossSellTriggered: false,
+      crossSellTemplate: undefined,
+      crossSellReason: "Rule-gated OFF: fallback response path used.",
+      visitedNodes: ["FallbackRuleNode", "ResponseComposer"],
+      fallbackUsed: true,
+      scenarioAssessment: {
+        category: "ambiguous",
+        confidence: 0.66,
+        reason: "Graph invocation failure fallback.",
+      },
+      updatedSession: input.session,
+    };
+  }
+}

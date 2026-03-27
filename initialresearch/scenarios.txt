@@ -1,0 +1,35 @@
+Shared Scenario Packs
+
+To keep judging objective and prevent teams from cherry-picking their demo scenarios, each track will come with a shared scenario pack. These are defined situations that every submission on that track must handle. During the live judging round (Phase 3), judges will also introduce 2-3 surprise scenarios that teams have not seen before, to test how their agents handle the unexpected.
+
+Track 1: Enterprise Content Operations
+
+Product launch sprint: Given a product spec document, generate a blog post, 3 social media variants, and an internal FAQ. The blog must pass a brand tone check, and one social variant must be localized to a regional language.
+
+Compliance rejection: A draft blog post contains a claim that violates regulatory guidelines (e.g. an unsubstantiated health claim for a fintech product). The agent must catch it, flag the specific sentence, and suggest a compliant rewrite.
+
+Performance pivot: Given engagement data showing that video content outperforms text by 4x for a specific audience segment, the agent should recommend a strategy shift and generate a content calendar reflecting the new mix.
+
+Track 2: Autonomous Enterprise Workflows
+
+Employee onboarding: A new hire joins on Monday. The agent must create accounts across 3
+
+systems, assign a buddy, schedule orientation meetings, and send a welcome pack. Midway through, one system (e.g. JIRA) returns an access error. The agent should retry, then escalate to IT if it fails again.
+
+Meeting to action: Given a meeting transcript with 4 participants, the agent must extract action items, assign owners based on context, create tasks in a project tracker, and send a summary to all participants. One action item is ambiguous (no clear owner). The agent should flag it and ask for clarification rather than guessing.
+
+SLA breach prevention: A procurement approval has been stuck for 48 hours. The agent must identify the bottleneck (approver on leave), reroute to a delegate, and log the override with an audit trail.
+
+Track 3: Cost Intelligence & Autonomous Action
+
+Duplicate vendor detection: Given a procurement dataset with 500 vendors, the agent must identify duplicate or overlapping vendors (same service, different entity names), quantify the consolidation savings, and generate a recommended action plan with priority ranking.
+
+Spend anomaly: Cloud infrastructure costs spike 40% month-over-month. The agent must diagnose whether the spike is from a provisioning error, seasonal traffic, or a misconfigured auto-scaling rule, and recommend (or execute) the appropriate corrective action for each case.
+
+SLA penalty prevention: A service delivery team is trending toward missing a contractual SLA with 3 days remaining. The agent must project the shortfall, identify which tasks to reprioritize, and either reassign resources or escalate to a manager with a specific recovery plan.
+
+Track 4: Sales & Revenue Operations
+
+Cold outreach sequence: Given a target account profile (company size, industry, recent funding round), the agent must research the company, identify 2 decision-makers, and draft a personalized 3-email sequence for each. The sequences should differ based on each person's role and likely priorities.
+
+Deal risk alert: A deal in the pipeline has gone silent for 10 days after a pricing discussion. The agent must assess the risk level, check if the prospect has been engaging with competitor content, and generate a re-engagement strategy with specific next steps for the sales rep.
