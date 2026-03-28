@@ -78,6 +78,10 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [isListening, setIsListening] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
+  const [isSpeechInputSupported, setIsSpeechInputSupported] = useState(true);
+  const [isSpeechOutputSupported, setIsSpeechOutputSupported] = useState(true);
+  const [voiceInputHint, setVoiceInputHint] = useState('Tap mic to speak');
+  const recognitionRef = useRef<any>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Dashboard state
@@ -344,9 +348,40 @@ export default function App() {
     scrollToBottom();
   }, [messages, isLoading]);
 
+  useEffect(() => {
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    const hasSpeechOutput = typeof window !== 'undefined' && !!window.speechSynthesis;
+
+    setIsSpeechInputSupported(Boolean(SpeechRecognition));
+    setIsSpeechOutputSupported(hasSpeechOutput);
+
+    if (!SpeechRecognition) {
+      setVoiceInputHint('Speech input is unavailable in this browser');
+    }
+
+    return () => {
+      if (recognitionRef.current) {
+        recognitionRef.current.stop();
+        recognitionRef.current = null;
+      }
+    };
+  }, []);
+
+  const voiceInputStateLabel = !isSpeechInputSupported
+    ? 'Unavailable'
+    : isListening
+      ? 'Listening'
+      : 'Ready';
+
+  const voiceOutputStateLabel = !isSpeechOutputSupported
+    ? 'Unavailable'
+    : isMuted
+      ? 'Muted'
+      : 'On';
+
   // ─── TTS ───────────────────────────────────────────────
   const speakText = (text: string) => {
-    if (isMuted || !window.speechSynthesis) return;
+    if (isMuted || !isSpeechOutputSupported || !window.speechSynthesis) return;
     window.speechSynthesis.cancel();
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.rate = 1.0;
@@ -354,43 +389,110 @@ export default function App() {
     window.speechSynthesis.speak(utterance);
   };
 
+  const toggleVoiceOutput = () => {
+    if (!isSpeechOutputSupported) return;
+
+    setIsMuted((prev) => {
+      const next = !prev;
+      if (!prev && window.speechSynthesis) {
+        window.speechSynthesis.cancel();
+      }
+      return next;
+    });
+  };
+
   // ─── STT ───────────────────────────────────────────────
   const toggleListening = () => {
     const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (!SpeechRecognition) {
-      alert("Your browser does not support Speech Recognition. Please use Chrome or Edge.");
+      setIsSpeechInputSupported(false);
+      setVoiceInputHint('Speech input unavailable. Use Chrome or Edge.');
       return;
     }
 
-    if (isListening) {
+    if (isListening || recognitionRef.current) {
+      if (recognitionRef.current) {
+        recognitionRef.current.stop();
+        recognitionRef.current = null;
+      }
       setIsListening(false);
+      setVoiceInputHint('Voice input paused');
       return;
     }
 
     const recognition = new SpeechRecognition();
-    recognition.continuous = false;
-    recognition.interimResults = false;
+    recognitionRef.current = recognition;
+    recognition.continuous = true;
+    recognition.interimResults = true;
     recognition.lang = 'en-US';
 
-    recognition.onstart = () => setIsListening(true);
-    recognition.onend = () => setIsListening(false);
+    recognition.onstart = () => {
+      setIsListening(true);
+      setVoiceInputHint('Listening... speak now');
+    };
+    recognition.onend = () => {
+      setIsListening(false);
+      recognitionRef.current = null;
+      setVoiceInputHint('Voice input ready');
+    };
+    
     recognition.onerror = (e: any) => {
       console.error("Speech recognition error:", e);
+      if (e.error === 'network') {
+        setVoiceInputHint('Network error: check connection and try again');
+      } else if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+        setVoiceInputHint('Microphone permission denied');
+      } else if (e.error === 'no-speech') {
+        setVoiceInputHint('No speech detected. Try speaking closer to your mic');
+      } else {
+        setVoiceInputHint('Speech input error. Please retry');
+      }
       setIsListening(false);
+      recognitionRef.current = null;
     };
+
+    // Keep existing input if there's any
+    let localFinal = input ? input + " " : "";
 
     recognition.onresult = (event: any) => {
-      const transcript = event.results[0][0].transcript;
-      setInput(transcript);
-      handleSend(undefined, transcript);
+      let currentTranscript = '';
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const t = event.results[i][0].transcript;
+        if (event.results[i].isFinal) {
+          localFinal += t + ' ';
+        } else {
+          currentTranscript += t;
+        }
+      }
+      
+      const combined = (localFinal + currentTranscript).trim();
+      setInput(combined);
+      setVoiceInputHint(combined ? 'Transcribing to input box' : 'Listening... speak now');
     };
 
-    recognition.start();
+    try {
+      setVoiceInputHint('Connecting microphone...');
+      recognition.start();
+    } catch (err) {
+      console.error("Failed to start speech recognition:", err);
+      setVoiceInputHint('Unable to start microphone right now');
+      setIsListening(false);
+      recognitionRef.current = null;
+    }
   };
 
   // ─── Chat send ─────────────────────────────────────────
   const handleSend = async (e?: React.FormEvent, overrideText?: string) => {
     e?.preventDefault();
+    
+    // Stop recognition if user sends the message manually
+    if (recognitionRef.current) {
+      recognitionRef.current.stop();
+      recognitionRef.current = null;
+      setIsListening(false);
+      setVoiceInputHint('Voice input paused');
+    }
+
     const textToProcess = overrideText || input;
     if (!textToProcess.trim() || !sessionId || isLoading) return;
 
@@ -955,14 +1057,25 @@ export default function App() {
                       {profileSaving ? 'Saving...' : 'Save'}
                     </button>
                     <button
-                      onClick={() => {
-                        setIsMuted(!isMuted);
-                        if (!isMuted) window.speechSynthesis.cancel();
-                      }}
-                      className="hover:bg-red-600 p-1 rounded"
-                      title={isMuted ? "Unmute Voice" : "Mute Voice"}
+                      onClick={toggleVoiceOutput}
+                      disabled={!isSpeechOutputSupported}
+                      className={`p-1.5 rounded flex items-center gap-1.5 text-[11px] font-semibold transition-colors ${
+                        !isSpeechOutputSupported
+                          ? 'bg-white/10 text-red-100/70 cursor-not-allowed'
+                          : isMuted
+                            ? 'bg-white/15 text-red-100 hover:bg-red-600'
+                            : 'bg-white/20 text-white hover:bg-red-600'
+                      }`}
+                      title={
+                        !isSpeechOutputSupported
+                          ? 'Speech output unavailable in this browser'
+                          : isMuted
+                            ? 'Enable voice output'
+                            : 'Disable voice output'
+                      }
                     >
-                      {isMuted ? <VolumeX size={20} /> : <Volume2 size={20} />}
+                      {isMuted || !isSpeechOutputSupported ? <VolumeX size={16} /> : <Volume2 size={16} />}
+                      <span>{!isSpeechOutputSupported ? 'Voice Out N/A' : isMuted ? 'Voice Out Off' : 'Voice Out On'}</span>
                     </button>
                     <button onClick={() => setIsOpen(false)} className="hover:bg-red-600 p-1 rounded" title="Close">
                       <X size={20} />
@@ -1193,15 +1306,47 @@ export default function App() {
                   <div ref={messagesEndRef} />
                 </div>
 
+                <div className="px-3 py-2 border-t border-gray-200 bg-slate-50 flex items-center justify-between gap-3 text-[11px]">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className={`w-2 h-2 rounded-full shrink-0 ${
+                      !isSpeechInputSupported
+                        ? 'bg-gray-400'
+                        : isListening
+                          ? 'bg-red-500 animate-pulse'
+                          : 'bg-emerald-500'
+                    }`} />
+                    <span className="font-semibold text-slate-700 shrink-0">Voice In: {voiceInputStateLabel}</span>
+                    <span className="text-slate-500 truncate">{voiceInputHint}</span>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <span className={`w-2 h-2 rounded-full ${
+                      !isSpeechOutputSupported
+                        ? 'bg-gray-400'
+                        : isMuted
+                          ? 'bg-amber-500'
+                          : 'bg-emerald-500'
+                    }`} />
+                    <span className="font-semibold text-slate-700">Voice Out: {voiceOutputStateLabel}</span>
+                  </div>
+                </div>
+
                 {/* INPUT AREA */}
                 <form onSubmit={(e) => handleSend(e)} className="p-3 border-t bg-white flex items-center gap-2">
                   <button
                     type="button"
                     onClick={toggleListening}
-                    className={`p-2 rounded-xl transition-colors ${isListening ? 'bg-red-100 text-red-600 animate-pulse' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
-                    title="Voice Input"
+                    disabled={!isSpeechInputSupported}
+                    className={`min-w-[88px] px-2.5 py-2 rounded-xl transition-colors text-xs font-semibold flex items-center justify-center gap-1.5 ${
+                      !isSpeechInputSupported
+                        ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                        : isListening
+                          ? 'bg-red-100 text-red-700 animate-pulse'
+                          : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                    }`}
+                    title={!isSpeechInputSupported ? 'Speech input unavailable' : isListening ? 'Stop voice input' : 'Start voice input'}
                   >
-                    {isListening ? <MicOff size={20} /> : <Mic size={20} />}
+                    {isListening ? <MicOff size={16} /> : <Mic size={16} />}
+                    <span>{isListening ? 'Stop' : 'Speak'}</span>
                   </button>
                   <input
                     type="text"

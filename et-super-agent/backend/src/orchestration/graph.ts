@@ -217,8 +217,12 @@ function shouldSurfaceRecommendations(input: {
   gapLabel?: GapLabel;
   profileComplete: boolean;
   hasArticleContext: boolean;
+  lastAssistantMessage?: string;
 }): boolean {
-  const normalized = input.message.toLowerCase();
+  const normalized = input.message.toLowerCase().trim();
+
+  const isAffirmative = ["yes", "yes please", "yep", "sure", "yeah", "ok", "okay", "please do", "do it", "show me"].includes(normalized);
+  const wasAsking = input.lastAssistantMessage && input.lastAssistantMessage.toLowerCase().includes("would you like me to suggest");
 
   const recommendationIntent = [
     "recommend",
@@ -239,14 +243,15 @@ function shouldSurfaceRecommendations(input: {
   ].some((keyword) => normalized.includes(keyword));
 
   const urgentGap = input.gapLabel === "DEBT_STRESS";
-  const lowSignalPrompt = ["hi", "hello", "hey", "ok", "thanks"].includes(normalized.trim());
+  
+  if ((isAffirmative && wasAsking) || recommendationIntent || urgentGap) {
+    return true;
+  }
+  
+  const lowSignalPrompt = ["hi", "hello", "hey", "ok", "thanks"].includes(normalized);
 
   if (lowSignalPrompt) {
     return false;
-  }
-
-  if (recommendationIntent || urgentGap) {
-    return true;
   }
 
   return false;
@@ -741,11 +746,13 @@ const recommendationAgentNode = async (state: typeof GraphState.State) => {
     }));
   }
 
+  const lastAssistant = state.session.history.slice().reverse().find(m => m.role === "assistant");
   const shouldShowRecommendations = shouldSurfaceRecommendations({
     message: state.message,
     gapLabel: state.gapLabel,
     profileComplete: state.session.profileComplete,
     hasArticleContext: Boolean(state.session.pageContext.articleId),
+    lastAssistantMessage: lastAssistant?.content,
   });
 
   const serviceIntent =
