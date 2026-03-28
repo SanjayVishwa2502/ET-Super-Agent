@@ -30,3 +30,17 @@ Thumbs.db
 
 # Runtime data
 **/backend/data/profiles.json
+
+# Local patch/helper artifacts used during iterative edits
+node_to_replace.txt
+temp_*.txt
+patch*.cjs
+patch*.js
+replace_*.js
+update_*.js
+**/node_to_replace.txt
+**/temp_*.txt
+**/patch*.cjs
+**/patch*.js
+**/replace_*.js
+**/update_*.js
