@@ -1,0 +1,142 @@
+ET SUPER AGENT - IMPLEMENTED FEATURES
+
+This file lists the currently implemented features for project explanation and demo walkthrough.
+
+1) PLATFORM CORE
+- Full-stack architecture: React frontend + Express/TypeScript backend
+- Session-driven conversational state
+- Modular backend routes for chat, profile, context, tools, compare, validation
+- Zod-based payload validation and type-safe request handling
+
+2) AUTHENTICATION AND PROFILE LIFECYCLE
+- User registration (email/password)
+- User login with credential validation
+- Guest session start flow
+- Profile save/update from active session
+- Profile listing endpoint
+
+3) DYNAMIC CONTEXTUAL LENSES (SUB-PROFILES)
+- Create lens with name, long description, and tags
+- LLM-based semantic extraction into dense lens directives (`extractedContext`)
+- Persist lenses under user profile
+- Switch active lens during session
+- Delete lens
+- Newly created lens auto-activated
+
+4) AGENT ORCHESTRATION AND PROMPT INTEGRATION
+- LangGraph orchestration pipeline with dedicated nodes:
+  - scenario_guard
+  - input_router
+  - concierge_agent
+  - navigator_agent
+  - recommendation_agent
+  - cross_sell_agent
+  - response_composer
+- Prompt templating with profile/context/history injection
+- Active lens context injected into response composer
+- Response composer includes strict lens enforcement rule
+
+5) CHAT, RECOMMENDATIONS, AND COMPARE
+- Chat endpoint with orchestrated assistant response
+- Recommendation cards with CTA + tool metadata
+- Recommendation surfacing logic (intent-aware)
+- Product compare endpoint with eligibility-aware scoring and reasoning
+- Match score and eligibility status returned to UI
+
+6) CONTEXT AND NEWS INTELLIGENCE
+- Dashboard API with curated news cards and mock personas
+- Context switching by selected article and user persona
+- Live news context support
+- Google News RSS ingestion with caching and deduplication
+- News summarization with LLM path and deterministic fallback path
+
+7) FINANCIAL TOOLS (INTERACTIVE)
+- Risk Profiler
+- Goal Planner
+- Fund Screener
+- Spend Analyzer
+
+Tool capabilities:
+- Input validation
+- Optional notes/context enrichment
+- Save tool outputs to session/profile answers
+- Frontend modal-based guided interaction
+
+8) FRONTEND EXPERIENCE FEATURES
+- Sign in / sign up / guest onboarding
+- Enter key submit for auth forms
+- Profile dropdown menu with logout action
+- Reader Lens panel with active lens tags
+- New lens creation modal and controls
+- Explicit lens delete button
+- Live news panel + article panel context switching
+- Chat widget with markdown rendering
+- Voice input/output controls with support-state indicators
+- Retry option for failed chat requests
+
+9) TRACEABILITY AND TRANSPARENCY
+- Traceability drawer in chat responses
+- Shows orchestration metadata:
+  - visited nodes
+  - gap label and strategy
+  - cross-sell trigger and reason
+  - scenario assessment confidence
+- Backend includes active lens enforcement signal in orchestration payload
+
+10) VALIDATION SUITE
+- Scenario validation endpoint for regression checks
+- Implemented validation scenarios include:
+  - Article switch changes recommendations/output
+  - User persona switch changes recommendations/output
+  - Rapid context switching avoids stale context leakage
+  - Missing article context triggers graceful fallback
+
+11) RUNTIME MODES AND RESILIENCE
+- Deterministic mode available (`USE_LLM=false`)
+- Provider auto-selection mode (`MODEL_PROVIDER=auto`)
+- Timeout and retry controls for model calls
+- Health route returns model/provider availability state
+
+12) IMPLEMENTED API SURFACE SUMMARY
+
+Health and session:
+- GET /api/health
+- POST /api/session/start
+
+Profile and lenses:
+- GET /api/profile/list
+- POST /api/profile/register
+- POST /api/profile/login
+- POST /api/profile/save
+- POST /api/profile/lens/create
+- POST /api/profile/lens/switch
+- DELETE /api/profile/lens
+
+Chat and recommendation:
+- POST /api/chat/message
+- POST /api/recommendations/compare
+
+Dashboard and context:
+- GET /api/dashboard/news
+- POST /api/context/select-article
+- POST /api/context/select-live-news
+- POST /api/context/summarize-current
+
+Tools:
+- POST /api/tools/risk-profiler
+- POST /api/tools/goal-planner
+- POST /api/tools/fund-screener
+- POST /api/tools/spend-analyzer
+
+Validation:
+- GET /api/validation/run-scenarios
+- POST /api/validation/run-scenarios
+
+13) CURRENT DELIVERY STATE
+- End-to-end implementation is present for:
+  - onboarding and profile flows
+  - dynamic lens-driven personalization
+  - context-aware orchestration
+  - recommendations and comparisons
+  - financial tool actions
+  - traceability and validation support
