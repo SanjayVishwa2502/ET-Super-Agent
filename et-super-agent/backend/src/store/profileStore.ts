@@ -187,6 +187,51 @@ async function save(input: SaveProfileInput): Promise<PersistedProfile> {
   return created;
 }
 
+
+async function createSubProfile(profileId: string, subProfileInput: Omit<import("../types.js").SubProfile, "id" | "createdAt">): Promise<import("../types.js").SubProfile> {
+  const profiles = await readProfiles();
+  const index = profiles.findIndex(p => p.profileId === profileId);
+  if (index === -1) throw new Error("PROFILE_NOT_FOUND");
+  
+  const existing = profiles[index];
+  const newSubProfile: import("../types.js").SubProfile = {
+    id: uuidv4(),
+    createdAt: new Date().toISOString(),
+    ...subProfileInput
+  };
+  
+  const updated: PersistedProfile = {
+    ...existing,
+    subProfiles: [...(existing.subProfiles || []), newSubProfile],
+    updatedAt: new Date().toISOString()
+  };
+  
+  profiles[index] = updated;
+  await writeProfiles(profiles);
+  return newSubProfile;
+}
+
+async function deleteSubProfile(profileId: string, subProfileId: string): Promise<void> {
+  const profiles = await readProfiles();
+  const index = profiles.findIndex(p => p.profileId === profileId);
+  if (index === -1) throw new Error("PROFILE_NOT_FOUND");
+  
+  const existing = profiles[index];
+  if (!existing.subProfiles) return;
+  
+  const updatedSubProfiles = existing.subProfiles.filter(sp => sp.id !== subProfileId);
+  
+  if (updatedSubProfiles.length !== existing.subProfiles.length) {
+    const updated: PersistedProfile = {
+      ...existing,
+      subProfiles: updatedSubProfiles,
+      updatedAt: new Date().toISOString()
+    };
+    profiles[index] = updated;
+    await writeProfiles(profiles);
+  }
+}
+
 export const profileStore = {
   getAll,
   getById,
@@ -195,4 +240,6 @@ export const profileStore = {
   register,
   verifyCredentials,
   save,
+  createSubProfile,
+  deleteSubProfile,
 };

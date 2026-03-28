@@ -57,10 +57,11 @@ chatRouter.post("/chat/message", async (req, res) => {
         strategy: result.gapStrategy,
       },
       crossSell: {
-        triggered: result.crossSellTriggered,
-        reason: result.crossSellReason,
-        template: result.crossSellTemplate,
+          triggered: result.crossSellTriggered,
+          reason: result.crossSellReason,
+          template: result.crossSellTemplate,
+        },
+        activeLensEnforced: !!session.activeLensId,
       },
-    },
-  });
+    });
 });

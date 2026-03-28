@@ -12,6 +12,15 @@ export type EnrichedContext = {
   lastUpdatedAt: string;
 };
 
+export type SubProfile = {
+  id: string;
+  name: string;
+  description: string;
+  tags: string[];
+  extractedContext?: string;
+  createdAt: string;
+};
+
 export type UserSession = {
   sessionId: string;
   profileId?: string;
@@ -26,6 +35,8 @@ export type UserSession = {
   latestGoal?: string;
   recommendationHistory: string[];
   history: Array<{ role: "user" | "assistant"; content: string }>;
+  activeLensId?: string;
+  activeLens?: SubProfile;
 };
 
 export type PersistedProfile = {
@@ -34,6 +45,7 @@ export type PersistedProfile = {
   email?: string;
   passwordHash?: string;
   profileComplete: boolean;
+  subProfiles?: SubProfile[];
   createdAt: string;
   updatedAt: string;
 };

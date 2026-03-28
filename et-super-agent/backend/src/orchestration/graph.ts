@@ -828,7 +828,9 @@ const responseComposerNode = async (state: typeof GraphState.State) => {
         latestGoal: state.session.latestGoal,
         activeContextHeadline: state.session.enrichedContext?.article?.headline,
         activeContextUserName: state.session.enrichedContext?.user?.name,
-      }),
+          activeLensName: state.session.activeLens?.name,
+          activeLensRules: state.session.activeLens?.extractedContext,
+        }),
       GAP_CONTEXT: JSON.stringify({
         label: state.gapLabel,
         strategy: state.gapStrategy,

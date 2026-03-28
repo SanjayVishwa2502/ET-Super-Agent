@@ -94,10 +94,20 @@ export type LiveNewsCard = {
   section: "Tax" | "Loans" | "Investments" | "Insurance";
 };
 
+export type SubProfile = {
+  id: string;
+  name: string;
+  description: string;
+  tags: string[];
+  extractedContext?: string;
+  createdAt: string;
+};
+
 export type SavedProfile = {
   profileId: string;
   name: string;
   profileComplete: boolean;
   updatedAt: string;
   profileAnswers: Record<string, string>;
+  subProfiles?: SubProfile[];
 };

@@ -4,12 +4,13 @@ import {
   Send, Bot, Cpu, ChevronDown, ChevronUp, ExternalLink, X,
   Mic, MicOff, Volume2, VolumeX, CheckCircle2, XCircle, Zap,
   Newspaper, User, ArrowRight, Sparkles, Shield, TrendingUp,
-  CreditCard, Heart, Activity, RotateCcw, AlertTriangle
+  CreditCard, Heart, Activity, RotateCcw, AlertTriangle,
+  Settings, Bell, CircleHelp, LogOut, Plus
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
-  Message, NewsCard, UserPersona, ActiveContextSummary, DashboardData, LiveNewsCard
+  Message, NewsCard, UserPersona, ActiveContextSummary, DashboardData, LiveNewsCard, SubProfile
 } from './types';
 
 type ProfileSummary = {
@@ -83,6 +84,7 @@ export default function App() {
   const [voiceInputHint, setVoiceInputHint] = useState('Tap mic to speak');
   const recognitionRef = useRef<any>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const profileMenuRef = useRef<HTMLDivElement>(null);
 
   // Dashboard state
   const [dashboardData, setDashboardData] = useState<DashboardData | null>(null);
@@ -108,6 +110,14 @@ export default function App() {
   const [profileSaving, setProfileSaving] = useState(false);
   const [activeProfileSummary, setActiveProfileSummary] = useState<ProfileSummary>({ name: 'Guest' });
   const [showPersonaLab, setShowPersonaLab] = useState(false);
+  const [userLenses, setUserLenses] = useState<SubProfile[]>([]);
+  const [activeUserLens, setActiveUserLens] = useState<SubProfile | null>(null);
+  const [showCreateLensModal, setShowCreateLensModal] = useState(false);
+  const [creatingLens, setCreatingLens] = useState(false);
+  const [newLensName, setNewLensName] = useState('');
+  const [newLensDescription, setNewLensDescription] = useState('');
+  const [newLensTags, setNewLensTags] = useState('');
+  const [showProfileMenu, setShowProfileMenu] = useState(false);
   const [lastChatError, setLastChatError] = useState<{ text: string; detail: string } | null>(null);
   const [activeToolAction, setActiveToolAction] = useState<{
     action: "risk-profiler" | "goal-planner" | "fund-screener" | "spend-analyzer";
@@ -131,6 +141,19 @@ export default function App() {
       }
     };
     initializeData();
+  }, []);
+
+  useEffect(() => {
+    const onDocumentMouseDown = (event: MouseEvent) => {
+      if (profileMenuRef.current && !profileMenuRef.current.contains(event.target as Node)) {
+        setShowProfileMenu(false);
+      }
+    };
+
+    document.addEventListener('mousedown', onDocumentMouseDown);
+    return () => {
+      document.removeEventListener('mousedown', onDocumentMouseDown);
+    };
   }, []);
 
   const startGuestSession = async () => {
@@ -173,6 +196,7 @@ export default function App() {
       const loadedName = res.data.profile?.profileAnswers?.name ?? 'there';
       setWelcomeBackName(loadedName);
       setActiveProfileSummary(deriveProfileSummaryFromAnswers(res.data.profile?.profileAnswers, loadedName));
+      setUserLenses(res.data.profile?.subProfiles || []);
       setMessages([{
         id: Date.now().toString(),
         role: 'assistant',
@@ -212,6 +236,7 @@ export default function App() {
       const loadedName = res.data.profile?.profileAnswers?.name ?? registerName.trim();
       setWelcomeBackName(loadedName);
       setActiveProfileSummary(deriveProfileSummaryFromAnswers(res.data.profile?.profileAnswers, loadedName));
+      setUserLenses(res.data.profile?.subProfiles || []);
       setMessages([{
         id: Date.now().toString(),
         role: 'assistant',
@@ -234,6 +259,110 @@ export default function App() {
     }
   };
 
+  const handleAuthSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (sessionBooting) return;
+    if (authMode === 'signin') {
+      await signIn();
+      return;
+    }
+    await signUp();
+  };
+
+  const refreshProfile = async () => {
+    if (!sessionId) return;
+    try {
+      const res = await axios.post('/api/profile/save', { sessionId });
+      setUserLenses(res.data.profile?.subProfiles || []);
+    } catch (err) {
+      console.error('Failed to refresh profile:', err);
+    }
+  };
+
+  useEffect(() => {
+    if (showPersonaLab) refreshProfile();
+  }, [showPersonaLab, sessionId]);
+
+  const handleCreateLens = async (e?: React.FormEvent) => {
+    e?.preventDefault();
+    if (!sessionId || !newLensName.trim() || !newLensDescription.trim()) return;
+
+    const tags = newLensTags
+      .split(',')
+      .map((tag) => tag.trim())
+      .filter(Boolean)
+      .slice(0, 10);
+
+    setCreatingLens(true);
+    try {
+      const res = await axios.post('/api/profile/lens/create', {
+        sessionId,
+        name: newLensName.trim(),
+        description: newLensDescription.trim().slice(0, 1000),
+        tags,
+      });
+
+      if (res.data.profile?.subProfiles) {
+        setUserLenses(res.data.profile.subProfiles);
+      } else {
+        await refreshProfile();
+      }
+
+      if (res.data.lens) {
+        setActiveUserLens(res.data.lens as SubProfile);
+        setSelectedUser(null);
+      }
+
+      setShowPersonaLab(true);
+      setShowCreateLensModal(false);
+      setNewLensName('');
+      setNewLensDescription('');
+      setNewLensTags('');
+    } catch (err) {
+      console.error('Failed to create lens:', err);
+      const detail = axios.isAxiosError(err)
+        ? (err.response?.data?.error ?? err.message)
+        : 'Unable to create lens right now.';
+      setMessages(prev => [...prev, {
+        id: Date.now().toString(),
+        role: 'assistant',
+        content: `Lens creation failed: ${String(detail)}`,
+      }]);
+    } finally {
+      setCreatingLens(false);
+    }
+  };
+
+  const handleLogout = () => {
+    if (recognitionRef.current) {
+      recognitionRef.current.stop();
+      recognitionRef.current = null;
+    }
+    if (window.speechSynthesis) {
+      window.speechSynthesis.cancel();
+    }
+
+    setSessionId(null);
+    setMessages([]);
+    setInput('');
+    setIsOpen(false);
+    setAuthMode('signin');
+    setShowPersonaLab(false);
+    setShowProfileMenu(false);
+    setShowCreateLensModal(false);
+    setActiveUserLens(null);
+    setUserLenses([]);
+    setSelectedArticle(null);
+    setActiveContext(null);
+    setContextVersion(0);
+    setWelcomeBackName(null);
+    setActiveProfileSummary({ name: 'Guest' });
+    setLoginPassword('');
+    setRegisterPassword('');
+    setAuthError(null);
+    setAuthInfo('You have been logged out.');
+  };
+
   const saveCurrentProfile = async () => {
     if (!sessionId) return;
     setProfileSaving(true);
@@ -242,6 +371,7 @@ export default function App() {
       const profileName = res.data.profile?.profileAnswers?.name ?? 'Profile';
       setWelcomeBackName(profileName);
       setActiveProfileSummary(deriveProfileSummaryFromAnswers(res.data.profile?.profileAnswers, profileName));
+      setUserLenses(res.data.profile?.subProfiles || []);
       setMessages(prev => [...prev, {
         id: Date.now().toString(),
         role: 'assistant',
@@ -331,8 +461,39 @@ export default function App() {
     }
   };
 
+  const handleDeleteLens = async (lensId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!sessionId) return;
+    try {
+      await axios.delete('/api/profile/lens', { data: { sessionId, lensId } });
+      if (activeUserLens?.id === lensId) setActiveUserLens(null);
+      await refreshProfile();
+    } catch (err) {
+      console.error('Failed to delete lens:', err);
+    }
+  };
+
+  const handleSelectUserLens = async (lens: SubProfile) => {
+    if (!sessionId) return;
+    try {
+      await axios.post('/api/profile/lens/switch', { sessionId, lensId: lens.id });
+      setActiveUserLens(lens);
+      setSelectedUser(null);
+    } catch (err) {
+      console.error('Failed to switch lens:', err);
+    }
+  };
+
   // ─── User persona click ────────────────────────────────
-  const handleUserClick = (user: UserPersona) => {
+  const handleUserClick = async (user: UserPersona) => {
+    setActiveUserLens(null);
+    if (sessionId) {
+      try {
+        await axios.post('/api/profile/lens/switch', { sessionId }); // null lensId resets it
+      } catch (e) {
+        console.error("Failed to reset lens:", e);
+      }
+    }
     setSelectedUser(user);
     if (selectedArticle) {
       handleContextSwitch(selectedArticle, user);
@@ -704,7 +865,7 @@ export default function App() {
               </button>
             </div>
 
-            <div className="mt-5 space-y-4">
+            <form className="mt-5 space-y-4" onSubmit={handleAuthSubmit}>
               {authMode === 'signin' ? (
                 <>
                   <div>
@@ -765,13 +926,14 @@ export default function App() {
 
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-1">
                 <button
-                  onClick={authMode === 'signin' ? signIn : signUp}
+                  type="submit"
                   disabled={sessionBooting || (authMode === 'signin' ? (!loginEmail.trim() || !loginPassword.trim()) : (!registerName.trim() || !registerEmail.trim() || !registerPassword.trim()))}
                   className="bg-black text-white rounded-xl px-3 py-2.5 text-sm font-semibold disabled:opacity-50"
                 >
                   {authMode === 'signin' ? 'Sign In' : 'Create Account'}
                 </button>
                 <button
+                  type="button"
                   onClick={startGuestSession}
                   disabled={sessionBooting}
                   className="sm:col-span-2 bg-stone-100 text-stone-800 border border-stone-300 rounded-xl px-3 py-2.5 text-sm font-semibold disabled:opacity-50"
@@ -791,7 +953,7 @@ export default function App() {
                   {authInfo}
                 </div>
               )}
-            </div>
+            </form>
           </section>
         </main>
       </div>
@@ -814,14 +976,60 @@ export default function App() {
             <span>INDUSTRY</span>
             <span>WEALTH</span>
           </nav>
-          <div className="flex items-center gap-2 rounded-full border border-gray-200 bg-gray-50 px-2 py-1">
-            <div className="h-8 w-8 rounded-full bg-primary text-white text-xs font-bold flex items-center justify-center">
-              {initialsFromName(activeProfileSummary.name)}
-            </div>
-            <div className="pr-2">
-              <div className="text-xs font-semibold text-gray-800 leading-none">{activeProfileSummary.name}</div>
-              <div className="text-[10px] text-gray-500">Profile active</div>
-            </div>
+          <div className="relative" ref={profileMenuRef}>
+            <button
+              onClick={() => setShowProfileMenu((prev) => !prev)}
+              className="flex items-center gap-2 rounded-full border border-gray-200 bg-gray-50 px-2 py-1 hover:bg-gray-100 transition-colors"
+            >
+              <div className="h-8 w-8 rounded-full bg-primary text-white text-xs font-bold flex items-center justify-center">
+                {initialsFromName(activeProfileSummary.name)}
+              </div>
+              <div className="pr-1 text-left">
+                <div className="text-xs font-semibold text-gray-800 leading-none">{activeProfileSummary.name}</div>
+                <div className="text-[10px] text-gray-500">Profile active</div>
+              </div>
+              <ChevronDown size={14} className="text-gray-400" />
+            </button>
+
+            {showProfileMenu && (
+              <div className="absolute right-0 mt-2 w-60 bg-white border border-gray-200 rounded-xl shadow-xl overflow-hidden z-50">
+                <div className="px-3 py-2.5 border-b border-gray-100 bg-gray-50">
+                  <div className="text-[10px] uppercase tracking-wider text-gray-500 font-bold">Signed In As</div>
+                  <div className="text-sm font-semibold text-gray-800 truncate">{activeProfileSummary.name}</div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setShowProfileMenu(false)}
+                  className="w-full flex items-center gap-2 px-3 py-2.5 text-sm text-gray-700 hover:bg-gray-50"
+                >
+                  <Settings size={15} /> Account Settings
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowProfileMenu(false)}
+                  className="w-full flex items-center gap-2 px-3 py-2.5 text-sm text-gray-700 hover:bg-gray-50"
+                >
+                  <Bell size={15} /> Notifications
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowProfileMenu(false)}
+                  className="w-full flex items-center gap-2 px-3 py-2.5 text-sm text-gray-700 hover:bg-gray-50"
+                >
+                  <CircleHelp size={15} /> Help & Support
+                </button>
+
+                <div className="border-t border-gray-100" />
+                <button
+                  type="button"
+                  onClick={handleLogout}
+                  className="w-full flex items-center gap-2 px-3 py-2.5 text-sm text-red-600 hover:bg-red-50 font-semibold"
+                >
+                  <LogOut size={15} /> Log Out
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </header>
@@ -835,47 +1043,147 @@ export default function App() {
           {/* CONTEXT LAB (OPTIONAL) */}
           <div className="p-4 border-b border-gray-100 bg-gradient-to-br from-slate-50 to-gray-50">
             <div className="flex items-center justify-between gap-2">
-              <div className="flex items-center gap-2">
-                <User size={16} className="text-blue-600" />
+              <div className="flex items-center gap-2 cursor-pointer" onClick={() => setShowPersonaLab((prev) => !prev)}>
+                <User size={16} className="text-indigo-600" />
                 <div>
-                  <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500">Reader Lens</h3>
-                  <p className="text-[11px] text-gray-500">
-                    {selectedUser ? `${selectedUser.name.split('(')[0].trim()} • ${selectedUser.incomeBand}` : 'No lens selected'}
+                  <h3 className="text-xs font-bold uppercase tracking-wider text-gray-800">Reader Lens</h3>
+                  <p className="text-[11px] font-bold text-indigo-700">
+                    {activeUserLens ? activeUserLens.name : (selectedUser ? `${selectedUser.name.split('(')[0].trim()} • ${selectedUser.incomeBand}` : 'No lens selected')}
                   </p>
                 </div>
               </div>
-              <button
-                onClick={() => setShowPersonaLab((prev) => !prev)}
-                className="text-[11px] font-semibold px-2.5 py-1 rounded-lg border border-gray-300 bg-white hover:bg-gray-100"
-              >
-                {showPersonaLab ? 'Hide Context Lab' : 'Switch Lens'}
-              </button>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setShowPersonaLab((prev) => !prev)}
+                  className="text-[11px] font-semibold px-2.5 py-1 rounded-lg border border-indigo-300 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 shadow-sm"
+                >
+                  Manage Lenses
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowPersonaLab(true);
+                    setShowCreateLensModal(true);
+                  }}
+                  className="inline-flex items-center gap-1 text-[11px] font-semibold px-2.5 py-1 rounded-lg border border-emerald-300 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 shadow-sm"
+                >
+                  <Plus size={12} /> New Lens
+                </button>
+              </div>
             </div>
 
-            {showPersonaLab && (
-              <div className="grid grid-cols-2 gap-2 mt-3">
-                {dashboardData?.userPersonas.map(user => (
-                  <button
-                    key={user.userId}
-                    onClick={() => handleUserClick(user)}
-                    className={`persona-card text-left p-3 rounded-xl bg-white shadow-sm ${selectedUser?.userId === user.userId ? 'selected' : ''}`}
-                  >
-                    <div className="text-sm font-semibold text-gray-800 leading-tight mb-1">
-                      {user.name.split('(')[0].trim()}
-                    </div>
-                    <div className="flex items-center gap-1.5">
-                      <span className={`text-[10px] font-bold uppercase px-1.5 py-0.5 rounded risk-${user.riskAppetite}`}>
-                        {user.riskAppetite} risk
-                      </span>
-                      <span className="text-[10px] text-gray-400">{user.incomeBand}</span>
-                    </div>
-                    {user.activeLoans.length > 0 && (
-                      <div className="text-[10px] text-red-500 mt-1 font-medium">
-                        ⚠ {user.activeLoans.length} active loan{user.activeLoans.length > 1 ? 's' : ''}
-                      </div>
-                    )}
-                  </button>
+            {activeUserLens && activeUserLens.tags && activeUserLens.tags.length > 0 && (
+              <div className="flex flex-wrap gap-1 mt-2 -mb-1 px-4">
+                {activeUserLens.tags.map((t, idx) => (
+                  <span key={idx} className="text-[10px] bg-indigo-100 text-indigo-800 px-2 py-0.5 rounded font-bold uppercase border border-indigo-200">
+                    #{t}
+                  </span>
                 ))}
+              </div>
+            )}
+
+            {showPersonaLab && (
+              <div className="mt-3 p-4 pt-0 overflow-y-auto max-h-[500px]">
+
+                <div className="mb-3 p-2.5 rounded-xl border border-dashed border-emerald-300 bg-emerald-50/70">
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-emerald-700">Create Dynamic Profile</div>
+                  <div className="text-[11px] text-emerald-900 mt-0.5">Add a new contextual lens for a different investing mindset.</div>
+                  <button
+                    type="button"
+                    onClick={() => setShowCreateLensModal(true)}
+                    className="mt-2 inline-flex items-center gap-1.5 text-[11px] font-semibold px-2.5 py-1 rounded-lg border border-emerald-300 bg-white text-emerald-700 hover:bg-emerald-100"
+                  >
+                    <Plus size={12} /> Create New Lens
+                  </button>
+                </div>
+
+                {userLenses.length > 0 && (
+                  <div className="mb-4">
+                    <div className="flex items-center justify-between mb-2">
+                      <h4 className="text-[10px] font-bold uppercase text-gray-400">Your Lenses</h4>
+                      <button
+                        type="button"
+                        onClick={() => setShowCreateLensModal(true)}
+                        className="text-[10px] font-semibold text-emerald-700 hover:text-emerald-900"
+                      >
+                        + Add Lens
+                      </button>
+                    </div>
+                    <div className="grid grid-cols-1 gap-2">
+                      {userLenses.map(lens => (
+                        <div
+                          key={lens.id}
+                          onClick={() => handleSelectUserLens(lens)}
+                          className={`cursor-pointer relative text-left p-3 rounded-xl bg-white shadow-sm border ${activeUserLens?.id === lens.id ? 'border-primary ring-1 ring-primary' : 'border-gray-100 hover:border-gray-300'}`}
+                        >
+                          <div className="flex justify-between items-start mb-1">
+                            <div className="text-sm font-semibold text-gray-800 leading-tight w-[80%]">
+                              {lens.name}
+                            </div>
+                            <button
+                              type="button"
+                              onClick={(e) => handleDeleteLens(lens.id, e)}
+                              className="text-[10px] font-semibold text-red-600 bg-red-50 hover:bg-red-100 rounded-md px-2 py-1 transition-colors"
+                              title="Delete Lens"
+                            >
+                              Delete
+                            </button>
+                          </div>
+                          
+                          <div className="text-[11px] text-gray-600 line-clamp-2 mt-1">
+                            {lens.description}
+                          </div>
+                          
+                          {lens.tags && lens.tags.length > 0 && (
+                            <div className="flex flex-wrap gap-1 mt-2">
+                              {lens.tags.map((t, idx) => (
+                                <span key={idx} className="text-[9px] bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded">
+                                  {t}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {userLenses.length === 0 && (
+                  <div className="mb-4 rounded-xl border border-gray-200 bg-white p-3 text-xs text-gray-600">
+                    No custom lenses yet. Use Create New Lens to add your first profile lens.
+                  </div>
+                )}
+
+                <div className="mb-2">
+                  <h4 className="text-[10px] font-bold uppercase text-gray-400 mb-2">Mock Presets</h4>
+                  <div className="grid grid-cols-2 gap-2">
+                    {dashboardData?.userPersonas.map(user => (
+                      <button
+                        key={user.userId}
+                        onClick={() => handleUserClick(user)}
+                        className={`persona-card text-left p-3 rounded-xl bg-white shadow-sm ${selectedUser?.userId === user.userId && !activeUserLens ? 'selected' : ''}`}
+                      >
+                        <div className="text-sm font-semibold text-gray-800 leading-tight mb-1">
+                          {user.name.split('(')[0].trim()}
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <span className={`text-[10px] font-bold uppercase px-1.5 py-0.5 rounded risk-${user.riskAppetite}`}>
+                            {user.riskAppetite} risk
+                          </span>
+                          <span className="text-[10px] text-gray-400">{user.incomeBand}</span>
+                        </div>
+                        {user.activeLoans.length > 0 && (
+                          <div className="text-[10px] text-red-500 mt-1 font-medium">
+                            ⚠ {user.activeLoans.length} active loan{user.activeLoans.length > 1 ? 's' : ''}
+                          </div>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
               </div>
             )}
           </div>
@@ -1370,6 +1678,84 @@ export default function App() {
           </div>
         </div>
       </div>
+
+      {showCreateLensModal && sessionId && (
+        <div className="fixed inset-0 z-[120] bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="w-full max-w-xl bg-white rounded-2xl shadow-2xl border border-gray-200 overflow-hidden">
+            <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+              <div>
+                <h3 className="text-lg font-bold text-gray-900">Create New Profile Lens</h3>
+                <p className="text-xs text-gray-500 mt-0.5">Define a new behavioral profile for the agent.</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowCreateLensModal(false)}
+                className="text-gray-400 hover:text-gray-700"
+                aria-label="Close create lens modal"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <form onSubmit={handleCreateLens} className="p-5 space-y-4">
+              <div>
+                <label className="text-[11px] font-bold uppercase tracking-[0.18em] text-gray-500">Lens Name</label>
+                <input
+                  value={newLensName}
+                  onChange={(e) => setNewLensName(e.target.value)}
+                  type="text"
+                  maxLength={50}
+                  required
+                  placeholder="Example: Retirement Planner"
+                  className="w-full mt-1.5 border border-gray-300 rounded-xl px-3 py-2.5 text-sm bg-gray-50"
+                />
+              </div>
+
+              <div>
+                <label className="text-[11px] font-bold uppercase tracking-[0.18em] text-gray-500">Description</label>
+                <textarea
+                  value={newLensDescription}
+                  onChange={(e) => setNewLensDescription(e.target.value)}
+                  maxLength={1000}
+                  required
+                  placeholder="Describe this profile in natural language: financial behavior, risk appetite, goals, constraints..."
+                  className="w-full mt-1.5 border border-gray-300 rounded-xl px-3 py-2.5 text-sm bg-gray-50 h-32 resize-none"
+                />
+                <div className="text-[10px] text-gray-500 mt-1 text-right">{newLensDescription.length}/1000</div>
+              </div>
+
+              <div>
+                <label className="text-[11px] font-bold uppercase tracking-[0.18em] text-gray-500">Tags</label>
+                <input
+                  value={newLensTags}
+                  onChange={(e) => setNewLensTags(e.target.value)}
+                  type="text"
+                  placeholder="tax, conservative, retirement, debt-free"
+                  className="w-full mt-1.5 border border-gray-300 rounded-xl px-3 py-2.5 text-sm bg-gray-50"
+                />
+                <div className="text-[10px] text-gray-500 mt-1">Comma-separated keywords, up to 10 tags.</div>
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowCreateLensModal(false)}
+                  className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 text-sm font-semibold"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={creatingLens || !newLensName.trim() || !newLensDescription.trim()}
+                  className="px-4 py-2 rounded-lg bg-black text-white text-sm font-semibold disabled:opacity-50"
+                >
+                  {creatingLens ? 'Creating Lens...' : 'Create Lens'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {activeToolAction && sessionId && (
         <ToolActionModal
