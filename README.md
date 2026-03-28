@@ -34,50 +34,40 @@ ET Hackathon/
 cd "C:\Projects\ET Hackathon"
 ```
 
-### 2. Backend setup
-
-```bash
-cd et-super-agent/backend
-npm install
-```
+### 2. Create backend environment file (one-time)
 
 Create environment file from template:
 
 Windows PowerShell:
 ```powershell
-Copy-Item .env.example .env
+Copy-Item "et-super-agent/backend/.env.example" "et-super-agent/backend/.env"
 ```
 
 macOS/Linux:
 ```bash
-cp .env.example .env
+cp et-super-agent/backend/.env.example et-super-agent/backend/.env
 ```
 
 Important:
 - Keep backend `PORT=4040` in `.env` (frontend proxy expects this).
 - If you do not want to use external model providers, set `USE_LLM=false`.
 
-Run backend in development mode:
+### 3. Install dependencies for backend + frontend (one-time)
 
 ```bash
-npm run dev
-```
-
-Backend URL:
-- http://localhost:4040
-
-### 3. Frontend setup
-
-Open a new terminal:
-
-```bash
-cd "C:\Projects\ET Hackathon\et-super-agent\frontend"
 npm install
+npm run install:all
+```
+
+### 4. Run both apps with one command
+
+```bash
 npm run dev
 ```
 
-Frontend URL:
-- http://localhost:3000
+App URLs:
+- Backend: http://localhost:4040
+- Frontend: http://localhost:3000
 
 ## Build and Run
 
