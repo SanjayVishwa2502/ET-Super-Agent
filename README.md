@@ -69,6 +69,10 @@ App URLs:
 - Backend: http://localhost:4040
 - Frontend: http://localhost:3000
 
+Note:
+- Open the app in the browser at http://localhost:3000.
+- If you open http://localhost:4040 directly, seeing `Cannot GET /` is expected because backend serves API routes under `/api/*`.
+
 ## Build and Run
 
 ### Backend (production-style)
@@ -122,6 +126,10 @@ Backend does not start:
 Frontend cannot call backend:
 - Confirm backend is running on 4040.
 - Confirm Vite proxy target is http://localhost:4040.
+
+Seeing `Cannot GET` in browser:
+- `Cannot GET /` on backend URL is normal behavior.
+- Use http://localhost:3000 for UI and http://localhost:4040/api/health for backend verification.
 
 LLM/provider errors:
 - Set `USE_LLM=false` to run deterministic fallback mode.

@@ -4,9 +4,9 @@
   "private": true,
   "scripts": {
     "install:all": "npm install --prefix et-super-agent/backend && npm install --prefix et-super-agent/frontend",
-    "dev": "concurrently -n backend,frontend -c blue,green \"npm --prefix et-super-agent/backend run dev\" \"npm --prefix et-super-agent/frontend run dev\"",
-    "dev:backend": "npm --prefix et-super-agent/backend run dev",
-    "dev:frontend": "npm --prefix et-super-agent/frontend run dev",
+    "dev": "concurrently -n backend,frontend -c blue,green \"cd et-super-agent/backend && npm run dev\" \"cd et-super-agent/frontend && npm run dev\"",
+    "dev:backend": "cd et-super-agent/backend && npm run dev",
+    "dev:frontend": "cd et-super-agent/frontend && npm run dev",
     "build": "npm --prefix et-super-agent/backend run build && npm --prefix et-super-agent/frontend run build"
   },
   "devDependencies": {
