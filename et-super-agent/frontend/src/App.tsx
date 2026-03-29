@@ -130,7 +130,16 @@ export default function App() {
       try {
         const dashboardRes = await axios.get('/api/dashboard/news');
 
-        const data: DashboardData = dashboardRes.data;
+        const raw = dashboardRes.data as Partial<DashboardData>;
+        if (!Array.isArray(raw?.newsCards) || !Array.isArray(raw?.userPersonas)) {
+          throw new Error('Unexpected dashboard payload shape');
+        }
+
+        const data: DashboardData = {
+          newsCards: raw.newsCards,
+          userPersonas: raw.userPersonas,
+          liveNews: Array.isArray(raw.liveNews) ? raw.liveNews : [],
+        };
         setDashboardData(data);
         setLiveNews(data.liveNews ?? []);
         if (data.userPersonas.length > 0) {
@@ -795,7 +804,7 @@ export default function App() {
   };
 
   // ─── Group articles by section ─────────────────────────
-  const articlesBySection = dashboardData?.newsCards.reduce((acc, article) => {
+  const articlesBySection = dashboardData?.newsCards?.reduce((acc, article) => {
     if (!acc[article.section]) acc[article.section] = [];
     acc[article.section].push(article);
     return acc;
@@ -1159,7 +1168,7 @@ export default function App() {
                 <div className="mb-2">
                   <h4 className="text-[10px] font-bold uppercase text-gray-400 mb-2">Mock Presets</h4>
                   <div className="grid grid-cols-2 gap-2">
-                    {dashboardData?.userPersonas.map(user => (
+                    {dashboardData?.userPersonas?.map(user => (
                       <button
                         key={user.userId}
                         onClick={() => handleUserClick(user)}
