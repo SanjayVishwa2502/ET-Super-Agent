@@ -1,8 +1,14 @@
-import { createApp } from "../et-super-agent/backend/dist/app.js";
+let appPromise;
 
-const app = createApp();
+async function getApp() {
+  if (!appPromise) {
+    appPromise = import("../et-super-agent/backend/dist/app.js")
+      .then((mod) => mod.createApp());
+  }
+  return appPromise;
+}
 
-export default function handler(req, res) {
+export default async function handler(req, res) {
   const pathParam = req.query?.path;
   const rewrittenPath = Array.isArray(pathParam)
     ? pathParam.join("/")
@@ -18,5 +24,15 @@ export default function handler(req, res) {
   const remainingQuery = parsed.searchParams.toString();
 
   req.url = `${normalizedPath}${remainingQuery ? `?${remainingQuery}` : ""}`;
-  return app(req, res);
+
+  try {
+    const app = await getApp();
+    return app(req, res);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    console.error("API bootstrap failed:", error);
+    res.statusCode = 500;
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({ error: "API bootstrap failed", detail }));
+  }
 }
