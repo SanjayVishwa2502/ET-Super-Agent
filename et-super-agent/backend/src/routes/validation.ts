@@ -26,7 +26,7 @@ type ValidationReport = {
 };
 
 // Utility: create a fresh session and wire context
-function createTestSession(userId: string, articleId: string): UserSession {
+async function createTestSession(userId: string, articleId: string): Promise<UserSession> {
     const now = new Date().toISOString();
     const user = userRepository.getById(userId);
     const article = articleRepository.getById(articleId);
@@ -54,12 +54,12 @@ function createTestSession(userId: string, articleId: string): UserSession {
         history: [],
     };
 
-    sessionStore.set(session);
+    await sessionStore.set(session);
     return session;
 }
 
 // Switch context on an existing session
-function switchContext(session: UserSession, userId: string, articleId: string): { user: any; article: any; contextMissing: boolean } {
+async function switchContext(session: UserSession, userId: string, articleId: string): Promise<{ user: any; article: any; contextMissing: boolean }> {
     const user = userRepository.getById(userId);
     const article = articleRepository.getById(articleId);
     const contextMissing = !user || !article;
@@ -87,7 +87,7 @@ function switchContext(session: UserSession, userId: string, articleId: string):
     session.profileAnswers = {};
     session.profileComplete = false;
 
-    sessionStore.set(session);
+    await sessionStore.set(session);
     return { user, article, contextMissing };
 }
 
@@ -102,7 +102,7 @@ async function runScenarioA(): Promise<ScenarioResult> {
         const debtMessage = "I need help managing my credit card debt and loan payments";
 
         // Step 1: Tax context chat
-        const session = createTestSession(userId, taxArticleId);
+        const session = await createTestSession(userId, taxArticleId);
 
         const taxResult = await runConversationGraph({
             session: { ...session },
@@ -110,7 +110,7 @@ async function runScenarioA(): Promise<ScenarioResult> {
         });
 
         // Step 2: Switch to Debt context on same session
-        switchContext(session, userId, debtArticleId);
+        await switchContext(session, userId, debtArticleId);
 
         const debtResult = await runConversationGraph({
             session: { ...session },
@@ -168,14 +168,14 @@ async function runScenarioB(): Promise<ScenarioResult> {
         const testMessage = "What should I do about my investments?";
 
         // Step 1: Low-risk user
-        const session1 = createTestSession(userId1, articleId);
+        const session1 = await createTestSession(userId1, articleId);
         const result1 = await runConversationGraph({
             session: { ...session1 },
             message: testMessage,
         });
 
         // Step 2: High-risk user on same article
-        const session2 = createTestSession(userId2, articleId);
+        const session2 = await createTestSession(userId2, articleId);
         const result2 = await runConversationGraph({
             session: { ...session2 },
             message: testMessage,
@@ -228,7 +228,7 @@ async function runScenarioC(): Promise<ScenarioResult> {
         const articles = ["art_tax_01", "art_loans_01", "art_invest_01", "art_ins_01"];
         const testMessage = "What are the best investment and tax saving strategies for this topic";
 
-        const session = createTestSession(userId, articles[0]);
+        const session = await createTestSession(userId, articles[0]);
         const results: Array<{
             articleId: string;
             contextTopic: string;
@@ -239,8 +239,11 @@ async function runScenarioC(): Promise<ScenarioResult> {
 
         // Rapidly switch through 4 articles and chat each time
         for (const articleId of articles) {
-            switchContext(session, userId, articleId);
-            const freshSession = sessionStore.get(session.sessionId)!;
+            await switchContext(session, userId, articleId);
+            const freshSession = await sessionStore.get(session.sessionId);
+            if (!freshSession) {
+                throw new Error("Session not found during rapid switch validation");
+            }
 
             const result = await runConversationGraph({
                 session: { ...freshSession },
@@ -250,7 +253,7 @@ async function runScenarioC(): Promise<ScenarioResult> {
             // Persist the updated session for next iteration
             result.updatedSession.history.push({ role: "user", content: testMessage });
             result.updatedSession.history.push({ role: "assistant", content: result.assistantMessage });
-            sessionStore.set(result.updatedSession);
+            await sessionStore.set(result.updatedSession);
 
             results.push({
                 articleId,
@@ -318,14 +321,17 @@ async function runScenarioD(): Promise<ScenarioResult> {
         const testMessage = "Help me with my investment portfolio and tax planning approach";
 
         // Create session with a valid user but missing article
-        const session = createTestSession(userId, fakeArticleId);
+        const session = await createTestSession(userId, fakeArticleId);
 
         // Verify: enrichedContext should have article: null
         const articleIsNull = session.enrichedContext?.article === null;
 
         // Also verify context endpoint returns graceful response
-        switchContext(session, userId, fakeArticleId);
-        const freshSession = sessionStore.get(session.sessionId)!;
+        await switchContext(session, userId, fakeArticleId);
+        const freshSession = await sessionStore.get(session.sessionId);
+        if (!freshSession) {
+            throw new Error("Session not found during missing-article validation");
+        }
         const articleStillNull = freshSession.enrichedContext?.article === null;
 
         // Run the graph — should still work without crashing

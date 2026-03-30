@@ -116,7 +116,7 @@ toolsRouter.post("/tools/risk-profiler", async (req, res) => {
   }
 
   const { sessionId, answers, notes, persistToProfile } = parsed.data;
-  const session = sessionStore.get(sessionId);
+  const session = await sessionStore.get(sessionId);
   if (!session) {
     res.status(404).json({ error: "Session not found" });
     return;
@@ -152,7 +152,7 @@ toolsRouter.post("/tools/risk-profiler", async (req, res) => {
     savedProfileId = savedProfile.profileId;
   }
 
-  sessionStore.set(session);
+  await sessionStore.set(session);
 
   res.json({
     ...result,
@@ -170,7 +170,7 @@ toolsRouter.post("/tools/goal-planner", async (req, res) => {
   }
 
   const { sessionId, input, notes, persistToProfile } = parsed.data;
-  const session = sessionStore.get(sessionId);
+  const session = await sessionStore.get(sessionId);
   if (!session) {
     res.status(404).json({ error: "Session not found" });
     return;
@@ -213,7 +213,7 @@ toolsRouter.post("/tools/goal-planner", async (req, res) => {
     savedProfileId = savedProfile.profileId;
   }
 
-  sessionStore.set(session);
+  await sessionStore.set(session);
 
   res.json({
     ...plannerResult,
@@ -231,7 +231,7 @@ toolsRouter.post("/tools/fund-screener", async (req, res) => {
   }
 
   const { sessionId, input, notes, persistToProfile } = parsed.data;
-  const session = sessionStore.get(sessionId);
+  const session = await sessionStore.get(sessionId);
   if (!session) {
     res.status(404).json({ error: "Session not found" });
     return;
@@ -276,7 +276,7 @@ toolsRouter.post("/tools/fund-screener", async (req, res) => {
     savedProfileId = savedProfile.profileId;
   }
 
-  sessionStore.set(session);
+  await sessionStore.set(session);
 
   res.json({
     ...screenerResult,
@@ -294,7 +294,7 @@ toolsRouter.post("/tools/spend-analyzer", async (req, res) => {
   }
 
   const { sessionId, input, notes, persistToProfile } = parsed.data;
-  const session = sessionStore.get(sessionId);
+  const session = await sessionStore.get(sessionId);
   if (!session) {
     res.status(404).json({ error: "Session not found" });
     return;
@@ -327,7 +327,7 @@ toolsRouter.post("/tools/spend-analyzer", async (req, res) => {
     savedProfileId = savedProfile.profileId;
   }
 
-  sessionStore.set(session);
+  await sessionStore.set(session);
 
   res.json({
     ...analyzerResult,

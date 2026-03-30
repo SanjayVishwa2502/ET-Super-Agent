@@ -25,7 +25,7 @@ const summarizeCurrentSchema = z.object({
   sessionId: z.string().min(1),
 });
 
-contextRouter.post("/context/select-article", (req, res) => {
+contextRouter.post("/context/select-article", async (req, res) => {
   const parsed = selectArticleSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: "Invalid payload", details: parsed.error.flatten() });
@@ -34,7 +34,7 @@ contextRouter.post("/context/select-article", (req, res) => {
 
   const { sessionId, userId, articleId } = parsed.data;
 
-  const session = sessionStore.get(sessionId);
+  const session = await sessionStore.get(sessionId);
   if (!session) {
     res.status(404).json({ error: "Session not found" });
     return;
@@ -63,7 +63,7 @@ contextRouter.post("/context/select-article", (req, res) => {
     };
   }
 
-  sessionStore.set(session);
+  await sessionStore.set(session);
 
   const contextMissing = !user || !article;
   const warnings: string[] = [];
@@ -83,7 +83,7 @@ contextRouter.post("/context/select-article", (req, res) => {
   });
 });
 
-contextRouter.post("/context/select-live-news", (req, res) => {
+contextRouter.post("/context/select-live-news", async (req, res) => {
   const parsed = selectLiveNewsSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: "Invalid payload", details: parsed.error.flatten() });
@@ -92,7 +92,7 @@ contextRouter.post("/context/select-live-news", (req, res) => {
 
   const { sessionId, headline, section, source, url } = parsed.data;
 
-  const session = sessionStore.get(sessionId);
+  const session = await sessionStore.get(sessionId);
   if (!session) {
     res.status(404).json({ error: "Session not found" });
     return;
@@ -120,7 +120,7 @@ contextRouter.post("/context/select-live-news", (req, res) => {
     lastUpdatedAt: new Date().toISOString(),
   };
 
-  sessionStore.set(session);
+  await sessionStore.set(session);
 
   res.json({
     success: true,
@@ -142,7 +142,7 @@ contextRouter.post("/context/summarize-current", async (req, res) => {
     return;
   }
 
-  const session = sessionStore.get(parsed.data.sessionId);
+  const session = await sessionStore.get(parsed.data.sessionId);
   if (!session) {
     res.status(404).json({ error: "Session not found" });
     return;
@@ -160,7 +160,7 @@ contextRouter.post("/context/summarize-current", async (req, res) => {
 
   session.history.push({ role: "user", content: "Summarize this news" });
   session.history.push({ role: "assistant", content: composedMessage });
-  sessionStore.set(session);
+  await sessionStore.set(session);
 
   res.json({
     assistantMessage: composedMessage,

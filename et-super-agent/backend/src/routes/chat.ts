@@ -2,6 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { runConversationGraph } from "../orchestration/graph.js";
 import { sessionStore } from "../store/sessionStore.js";
+import { profileStore } from "../store/profileStore.js";
 import { RecommendationCardResponse } from "../types.js";
 
 export const chatRouter = Router();
@@ -18,10 +19,14 @@ chatRouter.post("/chat/message", async (req, res) => {
     return;
   }
 
-  const session = sessionStore.get(parsed.data.sessionId);
+  const session = await sessionStore.get(parsed.data.sessionId);
   if (!session) {
     res.status(404).json({ error: "Session not found" });
     return;
+  }
+
+  if (session.profileId) {
+    await profileStore.recordBehaviorSignal(session.profileId, parsed.data.message);
   }
 
   session.history.push({ role: "user", content: parsed.data.message });
@@ -42,7 +47,7 @@ chatRouter.post("/chat/message", async (req, res) => {
   }));
 
   result.updatedSession.history.push({ role: "assistant", content: result.assistantMessage });
-  sessionStore.set(result.updatedSession);
+  await sessionStore.set(result.updatedSession);
 
   res.json({
     assistantMessage: result.assistantMessage,

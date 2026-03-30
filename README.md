@@ -104,6 +104,10 @@ After both servers are running:
 - `tmp-file`: ephemeral fallback in serverless environment.
 - `file`: local file-based storage.
 
+`GET /api/health` also reports `sessionStore.mode`:
+- `kv`: durable session retrieval across serverless instances.
+- `memory`: in-memory fallback only (ephemeral).
+
 ## Production Account Persistence
 
 For stable account login/signup persistence in production, configure Vercel KV (or Upstash Redis REST) for backend profile storage:
@@ -111,8 +115,14 @@ For stable account login/signup persistence in production, configure Vercel KV (
 - `KV_REST_API_URL`
 - `KV_REST_API_TOKEN`
 - Optional: `PROFILE_STORE_KEY` (default `et-super-agent:profiles:v1`)
+- Optional aliases supported: `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN`
+- Optional session controls: `SESSION_STORE_PREFIX`, `SESSION_TTL_SECONDS`
 
 If KV is not configured, backend falls back to file storage. In serverless environments this fallback can be ephemeral, so users may need to re-register after cold starts/redeploys.
+
+Behavior memory:
+- Chat messages now update a persisted behavior document per profile (keywords, inferred traits, summary, and recent signals).
+- This document is returned in profile payloads to improve account-level awareness over time.
 
 ## Core Source Locations
 

@@ -21,6 +21,16 @@ export type SubProfile = {
   createdAt: string;
 };
 
+export type BehaviorDocument = {
+  summary: string;
+  keywords: string[];
+  traits: string[];
+  tokenCounts: Record<string, number>;
+  lastSignals: string[];
+  messageCount: number;
+  updatedAt: string;
+};
+
 export type UserSession = {
   sessionId: string;
   profileId?: string;
@@ -47,6 +57,7 @@ export type PersistedProfile = {
   passwordHash?: string;
   profileComplete: boolean;
   subProfiles?: SubProfile[];
+  behaviorDoc?: BehaviorDocument;
   loginCount?: number;
   lastLoginAt?: string;
   createdAt: string;

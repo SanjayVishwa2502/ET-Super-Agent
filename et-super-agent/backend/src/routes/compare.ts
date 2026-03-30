@@ -4,6 +4,7 @@ import { seedProducts } from "../mockDb/products.js";
 import { ProductItem } from "../mockDb/types.js";
 import { evaluateProductEligibility } from "../services/eligibilityEngine.js";
 import { sessionStore } from "../store/sessionStore.js";
+import { UserSession } from "../types.js";
 
 export const compareRouter = Router();
 
@@ -26,7 +27,7 @@ function normalizeRiskForEligibility(raw?: string): "low" | "medium" | "high" {
   return "medium";
 }
 
-function deriveHasDebt(session: ReturnType<typeof sessionStore.get>): boolean {
+function deriveHasDebt(session: UserSession | undefined): boolean {
   if (!session) {
     return false;
   }
@@ -118,7 +119,7 @@ compareRouter.post("/recommendations/compare", async (req, res) => {
   }
 
   const { sessionId, category } = parsed.data;
-  const session = sessionStore.get(sessionId);
+  const session = await sessionStore.get(sessionId);
   
   if (!session) {
     res.status(404).json({ error: "Session not found" });

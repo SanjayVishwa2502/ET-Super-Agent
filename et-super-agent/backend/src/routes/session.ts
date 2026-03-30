@@ -43,7 +43,7 @@ sessionRouter.post("/session/start", async (req, res) => {
     history: [],
   };
 
-  sessionStore.set(session);
+  await sessionStore.set(session);
 
   res.json({
     sessionId: session.sessionId,

@@ -3,7 +3,7 @@ import { z } from "zod";
 import { profileStore } from "../store/profileStore.js";
 import { extractLensContext } from "../services/lensExtractionService.js";
 import { sessionStore } from "../store/sessionStore.js";
-import { UserSession } from "../types.js";
+import { BehaviorDocument, UserSession } from "../types.js";
 import { v4 as uuidv4 } from "uuid";
 
 export const profileRouter = Router();
@@ -32,6 +32,7 @@ function toPublicProfile(profile: {
   profileAnswers: Record<string, string>;
   profileComplete: boolean;
   subProfiles?: import("../types.js").SubProfile[];
+  behaviorDoc?: BehaviorDocument;
   loginCount?: number;
   lastLoginAt?: string;
 }) {
@@ -41,6 +42,7 @@ function toPublicProfile(profile: {
     profileAnswers: profile.profileAnswers,
     profileComplete: profile.profileComplete,
     subProfiles: profile.subProfiles || [],
+    behaviorDoc: profile.behaviorDoc,
     loginCount: profile.loginCount ?? 0,
     lastLoginAt: profile.lastLoginAt,
   };
@@ -81,6 +83,7 @@ profileRouter.get("/profile/list", async (_req, res) => {
       accountRef: profile.accountRef,
       name: profile.profileAnswers.name ?? "Unknown",
       profileComplete: profile.profileComplete,
+      behaviorDoc: profile.behaviorDoc,
       loginCount: profile.loginCount ?? 0,
       lastLoginAt: profile.lastLoginAt,
       updatedAt: profile.updatedAt,
@@ -124,7 +127,7 @@ profileRouter.post("/profile/register", async (req, res) => {
       history: [],
     };
 
-    sessionStore.set(session);
+    await sessionStore.set(session);
 
     res.status(201).json({
       created: true,
@@ -178,7 +181,7 @@ profileRouter.post("/profile/login", async (req, res) => {
     history: [],
   };
 
-  sessionStore.set(session);
+  await sessionStore.set(session);
 
   res.json({
     found: true,
@@ -195,7 +198,7 @@ profileRouter.post("/profile/save", async (req, res) => {
     return;
   }
 
-  const session = sessionStore.get(parsed.data.sessionId);
+  const session = await sessionStore.get(parsed.data.sessionId);
   if (!session) {
     res.status(404).json({ error: "Session not found" });
     return;
@@ -214,7 +217,7 @@ profileRouter.post("/profile/save", async (req, res) => {
   session.profileId = saved.profileId;
   session.profileAnswers = saved.profileAnswers;
   session.profileComplete = saved.profileComplete;
-  sessionStore.set(session);
+  await sessionStore.set(session);
 
     res.json({
     saved: true,
@@ -236,7 +239,7 @@ profileRouter.post("/profile/lens/create", async (req, res) => {
     return;
   }
 
-  const session = sessionStore.get(parsed.data.sessionId);
+  const session = await sessionStore.get(parsed.data.sessionId);
   if (!session || !session.profileId) {
     res.status(404).json({ error: "Session or profile not found" });
     return;
@@ -261,7 +264,7 @@ profileRouter.post("/profile/lens/create", async (req, res) => {
     // Auto-switch to new lens
     session.activeLensId = newLens.id;
     session.activeLens = newLens;
-    sessionStore.set(session);
+    await sessionStore.set(session);
 
     const updatedProfile = await profileStore.getById(session.profileId);
     
@@ -287,7 +290,7 @@ profileRouter.delete("/profile/lens", async (req, res) => {
     return;
   }
 
-  const session = sessionStore.get(parsed.data.sessionId);
+  const session = await sessionStore.get(parsed.data.sessionId);
   if (!session || !session.profileId) {
     res.status(404).json({ error: "Context not found" });
     return;
@@ -298,7 +301,7 @@ profileRouter.delete("/profile/lens", async (req, res) => {
     if (session.activeLensId === parsed.data.lensId) {
       session.activeLensId = undefined;
       session.activeLens = undefined;
-      sessionStore.set(session);
+      await sessionStore.set(session);
     }
     
     const updatedProfile = await profileStore.getById(session.profileId);
@@ -320,7 +323,7 @@ profileRouter.post("/profile/lens/switch", async (req, res) => {
     return;
   }
 
-  const session = sessionStore.get(parsed.data.sessionId);
+  const session = await sessionStore.get(parsed.data.sessionId);
   if (!session || !session.profileId) {
     res.status(404).json({ error: "Context not found" });
     return;
@@ -340,7 +343,7 @@ profileRouter.post("/profile/lens/switch", async (req, res) => {
       session.activeLens = undefined;
     }
     
-    sessionStore.set(session);
+    await sessionStore.set(session);
     res.json({ success: true, activeLensId: session.activeLensId, activeLens: session.activeLens });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
