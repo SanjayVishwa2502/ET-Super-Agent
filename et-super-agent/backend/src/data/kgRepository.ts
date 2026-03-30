@@ -1,7 +1,6 @@
 import { readFileSync } from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { KGDataset, KGItem, KGItemTypeSchema, validateKGDataset } from "./kg.schema.js";
+import embeddedKgDataset from "./kg.json" with { type: "json" };
 
 type QueryParams = {
   topic?: string;
@@ -29,16 +28,19 @@ export class KGRepository {
   }
 
   static fromFile(filePath?: string): KGRepository {
-    const resolvedPath = filePath ?? KGRepository.defaultFilePath();
-    const raw = readFileSync(resolvedPath, "utf-8");
+    if (!filePath) {
+      const dataset = validateKGDataset(embeddedKgDataset);
+      return new KGRepository(dataset);
+    }
+
+    const raw = readFileSync(filePath, "utf-8");
     const parsed = JSON.parse(raw);
     const dataset = validateKGDataset(parsed);
     return new KGRepository(dataset);
   }
 
   static defaultFilePath(): string {
-    const currentDir = path.dirname(fileURLToPath(import.meta.url));
-    return path.join(currentDir, "kg.json");
+    return "embedded://kg.json";
   }
 
   all(): KGItem[] {
