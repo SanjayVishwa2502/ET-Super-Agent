@@ -2,11 +2,13 @@ import { Router } from "express";
 import { llm } from "../services/llmService.js";
 import { profileStoreMeta } from "../store/profileStore.js";
 import { sessionStoreMeta } from "../store/sessionStore.js";
+import { checkSqlDatabaseConnection } from "../store/sqlDatabase.js";
 
 export const healthRouter = Router();
 
 healthRouter.get("/health", async (_req, res) => {
   const llmHealthy = await llm.checkHealth();
+  const dbHealth = await checkSqlDatabaseConnection();
 
   res.json({
     ok: true,
@@ -16,6 +18,10 @@ healthRouter.get("/health", async (_req, res) => {
     },
     sessionStore: {
       mode: sessionStoreMeta.mode,
+    },
+    database: {
+      connected: dbHealth.ok,
+      error: dbHealth.error,
     },
     llm: {
       enabled: llm.isEnabled,

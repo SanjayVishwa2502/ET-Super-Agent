@@ -46,6 +46,13 @@ function normalizePostgresUrl(rawUrl: string): string {
   }
 }
 
+function sanitizeDbErrorMessage(message: string): string {
+  return message
+    .replace(/postgres(?:ql)?:\/\/[^@\s]+@/gi, "postgres://***@")
+    .replace(/password\s*=\s*[^\s]+/gi, "password=***")
+    .slice(0, 500);
+}
+
 function resolvePostgresConnectionString(): string | undefined {
   const direct = firstNonEmpty(
     process.env.DATABASE_URL,
@@ -318,6 +325,20 @@ export async function getSqlDatabase(): Promise<SqlDatabaseAdapter> {
   }
 
   return adapterPromise;
+}
+
+export async function checkSqlDatabaseConnection(): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const db = await getSqlDatabase();
+    await db.queryOne<{ ok: number }>("SELECT 1 AS ok");
+    return { ok: true };
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    return {
+      ok: false,
+      error: sanitizeDbErrorMessage(detail),
+    };
+  }
 }
 
 export const sqlDatabaseMeta = {
