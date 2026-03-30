@@ -64,12 +64,16 @@ export type PersistedProfile = {
   updatedAt: string;
 };
 
+export type LiveNewsCategory = "Home" | "Wealth" | "Markets" | "News";
+
 export type LiveNewsCard = {
   headline: string;
   url: string;
   source: string;
   publishedAt?: string;
   section: "Tax" | "Loans" | "Investments" | "Insurance";
+  category: LiveNewsCategory;
+  summary?: string;
 };
 
 export type RecommendationCard = {

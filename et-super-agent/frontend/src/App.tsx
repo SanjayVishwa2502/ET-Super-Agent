@@ -10,7 +10,7 @@ import {
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
-  Message, NewsCard, UserPersona, ActiveContextSummary, DashboardData, LiveNewsCard, LiveNewsMeta, SubProfile
+  Message, NewsCard, UserPersona, ActiveContextSummary, DashboardData, LiveNewsCard, LiveNewsCategory, LiveNewsMeta, SubProfile
 } from './types';
 
 type ProfileSummary = {
@@ -207,6 +207,8 @@ const SECTION_META: Record<string, { icon: React.ReactNode; badgeClass: string; 
   },
 };
 
+const LIVE_FEED_CATEGORIES: LiveNewsCategory[] = ['Home', 'Wealth', 'Markets', 'News'];
+
 // ─── Main App ─────────────────────────────────────────────
 export default function App() {
   // Chat state
@@ -233,6 +235,7 @@ export default function App() {
   const [contextSwitching, setContextSwitching] = useState(false);
   const [summarizingNews, setSummarizingNews] = useState(false);
   const [liveNews, setLiveNews] = useState<LiveNewsCard[]>([]);
+  const [selectedLiveCategory, setSelectedLiveCategory] = useState<LiveNewsCategory>('Home');
   const [liveNewsMeta, setLiveNewsMeta] = useState<LiveNewsMeta | null>(null);
   const [liveNewsLoading, setLiveNewsLoading] = useState(false);
   const [liveNewsError, setLiveNewsError] = useState<string | null>(null);
@@ -329,7 +332,7 @@ export default function App() {
   useEffect(() => {
     const intervalId = window.setInterval(() => {
       void refreshLiveNews(false);
-    }, 60 * 1000);
+    }, 20 * 1000);
 
     return () => {
       window.clearInterval(intervalId);
@@ -427,25 +430,17 @@ export default function App() {
         pageContext: { topic: 'general', tags: ['dashboard'] },
       });
 
-      setSessionId(res.data.sessionId);
       const loadedName = res.data.profile?.profileAnswers?.name ?? registerName.trim();
-      setWelcomeBackName(loadedName);
-      setActiveProfileSummary(deriveProfileSummaryFromAnswers(res.data.profile?.profileAnswers, loadedName));
-      setUserLenses(res.data.profile?.subProfiles || []);
-      setMessages([{
-        id: Date.now().toString(),
-        role: 'assistant',
-        content: res.data.welcomeMessage ?? `Welcome, ${loadedName}!`,
-      }]);
-      setAuthInfo(`Account created for ${loadedName}.`);
+      setAuthMode('signin');
+      setLoginEmail(registerEmail.trim());
+      setLoginPassword('');
+      setRegisterName('');
+      setRegisterEmail('');
+      setRegisterPassword('');
+      setAuthInfo(`Account created for ${loadedName}. Please sign in to continue.`);
     } catch (err) {
       console.error('Sign up failed:', err);
       setAuthError(getApiErrorMessage(err, 'Unable to create account right now.'));
-      setMessages([{
-        id: Date.now().toString(),
-        role: 'assistant',
-        content: 'Sign up failed. That email may already be in use.',
-      }]);
     } finally {
       setSessionBooting(false);
     }
@@ -629,6 +624,12 @@ export default function App() {
         section: item.section,
         topicTags: [item.section.toLowerCase(), item.source, 'live-news'],
         riskSignals: ['live-market-update'],
+        source: item.source,
+        url: item.url,
+        publishedAt: item.publishedAt,
+        summary: item.summary,
+        category: item.category,
+        fromLiveFeed: true,
       });
 
       setMessages(prev => [...prev, {
@@ -645,7 +646,7 @@ export default function App() {
 
   // ─── News card click ────────────────────────────────────
   const handleArticleClick = (article: NewsCard) => {
-    setSelectedArticle(article);
+    setSelectedArticle({ ...article, fromLiveFeed: false });
     if (selectedUser) {
       handleContextSwitch(article, selectedUser);
     }
@@ -989,6 +990,14 @@ export default function App() {
     return acc;
   }, {} as Record<string, NewsCard[]>) ?? {};
 
+  const liveCategoryCounts = LIVE_FEED_CATEGORIES.reduce((acc, category) => {
+    acc[category] = liveNews.filter((item) => item.category === category).length;
+    return acc;
+  }, {} as Record<LiveNewsCategory, number>);
+
+  const filteredLiveNews = liveNews.filter((item) => item.category === selectedLiveCategory);
+  const showCuratedFallbackNews = liveNews.length === 0 || Boolean(liveNewsMeta?.stale);
+
   if (!sessionId) {
     return (
       <div className="min-h-screen bg-gradient-to-b from-stone-100 via-white to-stone-100 text-gray-900">
@@ -1159,11 +1168,35 @@ export default function App() {
         </h1>
         <div className="flex items-center gap-6">
           <nav className="text-sm font-semibold flex gap-6 text-gray-500">
-            <span className="text-black">HOME</span>
-            <span>MARKETS</span>
-            <span>NEWS</span>
+            <button
+              type="button"
+              onClick={() => setSelectedLiveCategory('Home')}
+              className={selectedLiveCategory === 'Home' ? 'text-black' : 'hover:text-gray-700'}
+            >
+              HOME
+            </button>
+            <button
+              type="button"
+              onClick={() => setSelectedLiveCategory('Markets')}
+              className={selectedLiveCategory === 'Markets' ? 'text-black' : 'hover:text-gray-700'}
+            >
+              MARKETS
+            </button>
+            <button
+              type="button"
+              onClick={() => setSelectedLiveCategory('News')}
+              className={selectedLiveCategory === 'News' ? 'text-black' : 'hover:text-gray-700'}
+            >
+              NEWS
+            </button>
             <span>INDUSTRY</span>
-            <span>WEALTH</span>
+            <button
+              type="button"
+              onClick={() => setSelectedLiveCategory('Wealth')}
+              className={selectedLiveCategory === 'Wealth' ? 'text-black' : 'hover:text-gray-700'}
+            >
+              WEALTH
+            </button>
           </nav>
           <div className="relative" ref={profileMenuRef}>
             <button
@@ -1381,7 +1414,7 @@ export default function App() {
           <div className="flex-1 overflow-y-auto custom-scrollbar p-4 space-y-5">
             <div className="border border-gray-200 rounded-xl bg-gradient-to-br from-stone-50 to-white p-3">
               <div className="flex items-center justify-between mb-2 gap-2">
-                <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500">Live Internet News</h3>
+                <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500">Live Internet Feed</h3>
                 <div className="flex items-center gap-2">
                   <span className="text-[10px] text-gray-400">
                     {`${formatRelativeTimestamp(liveNewsMeta?.lastFetchedAt)} • cache ${liveNewsMeta?.cacheTtlSeconds ?? 0}s`}
@@ -1400,21 +1433,47 @@ export default function App() {
                 Sources online: {liveNewsMeta?.sourceCount ?? 0}
                 {liveNewsMeta?.stale ? ' • showing cached feed while providers recover' : ''}
               </div>
-              <div className="max-h-40 overflow-y-auto custom-scrollbar space-y-2 pr-1">
+
+              <div className="mb-2 flex flex-wrap gap-1.5">
+                {LIVE_FEED_CATEGORIES.map((category) => (
+                  <button
+                    key={category}
+                    type="button"
+                    onClick={() => setSelectedLiveCategory(category)}
+                    className={`text-[10px] font-semibold px-2 py-1 rounded-full border ${
+                      selectedLiveCategory === category
+                        ? 'bg-black text-white border-black'
+                        : 'bg-white text-gray-600 border-gray-200 hover:border-gray-300'
+                    }`}
+                  >
+                    {category} ({liveCategoryCounts[category] ?? 0})
+                  </button>
+                ))}
+              </div>
+
+              <div className="max-h-64 overflow-y-auto custom-scrollbar space-y-2 pr-1">
                 {liveNews.length === 0 && (
-                  <div className="text-xs text-gray-500">Live feed unavailable. Showing curated ET context cards below.</div>
+                  <div className="text-xs text-gray-500">Live feed unavailable. Curated ET fallback cards are shown below.</div>
                 )}
                 {liveNewsError && (
                   <div className="text-[10px] text-red-500">{liveNewsError}</div>
                 )}
-                {liveNews.map((item, idx) => (
+                {liveNews.length > 0 && filteredLiveNews.length === 0 && (
+                  <div className="text-xs text-gray-500">
+                    No live stories in {selectedLiveCategory} right now. Try another category or sync again.
+                  </div>
+                )}
+                {filteredLiveNews.map((item, idx) => (
                   <button
                     key={`${item.url}-${idx}`}
                     onClick={() => handleLiveNewsContextSwitch(item)}
                     className="block rounded-lg border border-gray-100 bg-white px-2.5 py-2 hover:border-gray-300"
                   >
-                    <div className="text-[10px] uppercase tracking-wide text-gray-400 mb-1">{item.section} • {item.source}</div>
+                    <div className="text-[10px] uppercase tracking-wide text-gray-400 mb-1">{item.category} • {item.section} • {item.source}</div>
                     <div className="text-xs font-semibold text-gray-800 leading-snug">{item.headline}</div>
+                    {item.summary && (
+                      <div className="text-[11px] text-gray-600 mt-1.5 line-clamp-2 text-left">{item.summary}</div>
+                    )}
                     {formatPublishedTime(item.publishedAt) && (
                       <div className="text-[10px] text-gray-400 mt-1">{formatPublishedTime(item.publishedAt)}</div>
                     )}
@@ -1423,53 +1482,57 @@ export default function App() {
               </div>
             </div>
 
-            <div className="flex items-center gap-2 mb-1">
-              <Newspaper size={16} className="text-primary" />
-              <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500">Today's News</h3>
-            </div>
-
-            {Object.entries(articlesBySection).map(([section, articles]) => {
-              const meta = SECTION_META[section] ?? SECTION_META.Tax;
-              return (
-                <div key={section}>
-                  <div className="section-header flex items-center gap-2 mb-2">
-                    <span className={`${meta.badgeClass} text-[10px] font-bold uppercase px-2 py-1 rounded-full flex items-center gap-1`}>
-                      {meta.icon} {section}
-                    </span>
-                  </div>
-                  <div className="space-y-2">
-                    {articles.map(article => (
-                      <div
-                        key={article.articleId}
-                        onClick={() => handleArticleClick(article)}
-                        className={`news-card bg-white rounded-xl p-3.5 shadow-sm ${selectedArticle?.articleId === article.articleId ? 'selected' : ''
-                          }`}
-                      >
-                        <h4 className="text-sm font-semibold text-gray-900 leading-snug mb-2 pr-6">
-                          {article.headline}
-                        </h4>
-                        <div className="flex flex-wrap gap-1">
-                          {article.topicTags.slice(0, 3).map(tag => (
-                            <span key={tag} className="text-[10px] bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded">
-                              {tag}
-                            </span>
-                          ))}
-                        </div>
-                        {article.riskSignals.length > 0 && (
-                          <div className="flex gap-1 mt-1.5">
-                            {article.riskSignals.slice(0, 2).map(signal => (
-                              <span key={signal} className="text-[10px] text-orange-600 bg-orange-50 px-1.5 py-0.5 rounded font-medium">
-                                {signal}
-                              </span>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    ))}
-                  </div>
+            {showCuratedFallbackNews && (
+              <>
+                <div className="flex items-center gap-2 mb-1">
+                  <Newspaper size={16} className="text-primary" />
+                  <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500">Today's News (Fallback)</h3>
                 </div>
-              );
-            })}
+
+                {Object.entries(articlesBySection).map(([section, articles]) => {
+                  const meta = SECTION_META[section] ?? SECTION_META.Tax;
+                  return (
+                    <div key={section}>
+                      <div className="section-header flex items-center gap-2 mb-2">
+                        <span className={`${meta.badgeClass} text-[10px] font-bold uppercase px-2 py-1 rounded-full flex items-center gap-1`}>
+                          {meta.icon} {section}
+                        </span>
+                      </div>
+                      <div className="space-y-2">
+                        {articles.map(article => (
+                          <div
+                            key={article.articleId}
+                            onClick={() => handleArticleClick(article)}
+                            className={`news-card bg-white rounded-xl p-3.5 shadow-sm ${selectedArticle?.articleId === article.articleId ? 'selected' : ''
+                              }`}
+                          >
+                            <h4 className="text-sm font-semibold text-gray-900 leading-snug mb-2 pr-6">
+                              {article.headline}
+                            </h4>
+                            <div className="flex flex-wrap gap-1">
+                              {article.topicTags.slice(0, 3).map(tag => (
+                                <span key={tag} className="text-[10px] bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded">
+                                  {tag}
+                                </span>
+                              ))}
+                            </div>
+                            {article.riskSignals.length > 0 && (
+                              <div className="flex gap-1 mt-1.5">
+                                {article.riskSignals.slice(0, 2).map(signal => (
+                                  <span key={signal} className="text-[10px] text-orange-600 bg-orange-50 px-1.5 py-0.5 rounded font-medium">
+                                    {signal}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
+              </>
+            )}
           </div>
         </div>
 
@@ -1488,8 +1551,32 @@ export default function App() {
                   {selectedArticle.headline}
                 </h2>
                 <p className="text-gray-400 text-sm mb-6 border-b pb-4">
-                  By ET Bureau | Updated: Mar 27, 2026
+                  {selectedArticle.fromLiveFeed
+                    ? `${selectedArticle.source ?? 'Live Feed'}${formatPublishedTime(selectedArticle.publishedAt) ? ` | ${formatPublishedTime(selectedArticle.publishedAt)}` : ''}`
+                    : 'By ET Bureau | Updated: Mar 27, 2026'}
                 </p>
+
+                {selectedArticle.fromLiveFeed && (
+                  <div className="mb-5 rounded-xl border border-blue-100 bg-blue-50/70 px-4 py-3">
+                    <div className="text-[11px] font-bold uppercase tracking-wider text-blue-700 mb-1">
+                      {selectedArticle.category ?? 'News'} Live Brief
+                    </div>
+                    <p className="text-sm text-blue-900 leading-relaxed">
+                      {selectedArticle.summary ?? 'Live story captured from external sources. Open full article for complete coverage.'}
+                    </p>
+                    {selectedArticle.url && (
+                      <a
+                        href={selectedArticle.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1.5 mt-2 text-xs font-semibold text-blue-700 hover:text-blue-900"
+                      >
+                        Read Full Story <ExternalLink size={13} />
+                      </a>
+                    )}
+                  </div>
+                )}
+
                 <div className="mb-6 flex items-center gap-2">
                   <button
                     onClick={summarizeCurrentNews}
@@ -1501,19 +1588,33 @@ export default function App() {
                   <span className="text-xs text-gray-500">Get concise summary, insights, and watchouts in chat.</span>
                 </div>
                 <div className="space-y-5 text-lg text-gray-700 leading-relaxed">
-                  <p>
-                    This article covers key insights related to <strong>{selectedArticle.section.toLowerCase()}</strong> topics
-                    including {selectedArticle.topicTags.join(', ')}. Our analysis explores the current landscape and
-                    what it means for different investor profiles.
-                  </p>
-                  <div className="p-5 bg-blue-50 border-l-4 border-blue-500 italic text-base rounded-r-lg">
-                    "Understanding the interplay between {selectedArticle.topicTags[0]} and {selectedArticle.topicTags[1] || 'market dynamics'} is
-                    crucial for informed financial decision-making in the current economic environment."
-                  </div>
-                  <p>
-                    Risk signals to note: {selectedArticle.riskSignals.join(', ')}. Our Super Agent analyzes these
-                    factors along with your personal profile to deliver tailored recommendations.
-                  </p>
+                  {selectedArticle.fromLiveFeed ? (
+                    <>
+                      <p>
+                        This is a <strong>{selectedArticle.category ?? 'news'}</strong> live update tagged under{' '}
+                        <strong>{selectedArticle.section.toLowerCase()}</strong>. The assistant can now personalize your next recommendation from this exact market context.
+                      </p>
+                      <p>
+                        Quick context tags: {selectedArticle.topicTags.join(', ')}. You can click "Summarize With Super Agent" to transform this live item into actionable insights and watchouts.
+                      </p>
+                    </>
+                  ) : (
+                    <>
+                      <p>
+                        This article covers key insights related to <strong>{selectedArticle.section.toLowerCase()}</strong> topics
+                        including {selectedArticle.topicTags.join(', ')}. Our analysis explores the current landscape and
+                        what it means for different investor profiles.
+                      </p>
+                      <div className="p-5 bg-blue-50 border-l-4 border-blue-500 italic text-base rounded-r-lg">
+                        "Understanding the interplay between {selectedArticle.topicTags[0]} and {selectedArticle.topicTags[1] || 'market dynamics'} is
+                        crucial for informed financial decision-making in the current economic environment."
+                      </div>
+                      <p>
+                        Risk signals to note: {selectedArticle.riskSignals.join(', ')}. Our Super Agent analyzes these
+                        factors along with your personal profile to deliver tailored recommendations.
+                      </p>
+                    </>
+                  )}
                 </div>
 
                 {/* Topic tags */}

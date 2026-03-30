@@ -102,7 +102,9 @@ After both servers are running:
 
 Live feed behavior:
 - Backend aggregates real-time Google News RSS finance feeds with short caching.
-- Frontend refreshes the live feed corner automatically every minute and supports manual sync.
+- Frontend refreshes the live feed corner automatically every 20 seconds and supports manual sync.
+- Live items are categorized into `Home`, `Wealth`, `Markets`, and `News` for quick filtering.
+- Curated mock cards are shown only as fallback when live feed is unavailable or stale.
 
 `GET /api/health` now reports `profileStore.mode` and `sessionStore.mode`:
 - `postgres`: durable SQL storage (recommended for Vercel production).

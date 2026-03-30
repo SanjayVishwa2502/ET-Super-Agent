@@ -63,6 +63,12 @@ export type NewsCard = {
   section: "Tax" | "Loans" | "Investments" | "Insurance";
   topicTags: string[];
   riskSignals: string[];
+  source?: string;
+  url?: string;
+  publishedAt?: string;
+  summary?: string;
+  category?: LiveNewsCategory;
+  fromLiveFeed?: boolean;
 };
 
 export type UserPersona = {
@@ -87,12 +93,16 @@ export type DashboardData = {
   liveNewsMeta?: LiveNewsMeta;
 };
 
+export type LiveNewsCategory = "Home" | "Wealth" | "Markets" | "News";
+
 export type LiveNewsCard = {
   headline: string;
   url: string;
   source: string;
   publishedAt?: string;
   section: "Tax" | "Loans" | "Investments" | "Insurance";
+  category: LiveNewsCategory;
+  summary?: string;
 };
 
 export type LiveNewsMeta = {

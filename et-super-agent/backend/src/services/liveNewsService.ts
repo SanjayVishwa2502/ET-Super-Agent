@@ -1,6 +1,7 @@
-import { LiveNewsCard } from "../types.js";
+import { LiveNewsCard, LiveNewsCategory } from "../types.js";
 
 type Section = LiveNewsCard["section"];
+type Category = LiveNewsCategory;
 
 type CachedNews = {
   fetchedAt: number;
@@ -20,20 +21,20 @@ export type LiveNewsSnapshot = {
 
 const GOOGLE_NEWS_RSS = "https://news.google.com/rss/search";
 
-const QUERIES: Array<{ section: Section; query: string; take: number }> = [
-  { section: "Tax", query: "india personal finance tax filing income tax update", take: 3 },
-  { section: "Tax", query: "india tax deduction 80c new tax regime", take: 2 },
-  { section: "Loans", query: "india personal loan emi interest rate banking", take: 3 },
-  { section: "Loans", query: "india credit card debt repayment balance transfer", take: 2 },
-  { section: "Investments", query: "india mutual fund sip investing market outlook", take: 3 },
-  { section: "Investments", query: "india stock market nifty portfolio allocation", take: 2 },
-  { section: "Insurance", query: "india health insurance life cover premium policy", take: 3 },
-  { section: "Insurance", query: "india term insurance claim settlement mediclaim", take: 2 },
+const QUERIES: Array<{ section: Section; category: Category; query: string; take: number }> = [
+  { section: "Tax", category: "News", query: "india personal finance tax filing income tax update", take: 3 },
+  { section: "Tax", category: "News", query: "india tax deduction 80c new tax regime", take: 2 },
+  { section: "Loans", category: "Home", query: "india personal loan emi interest rate banking", take: 3 },
+  { section: "Loans", category: "Home", query: "india credit card debt repayment balance transfer", take: 2 },
+  { section: "Investments", category: "Markets", query: "india mutual fund sip investing market outlook", take: 3 },
+  { section: "Investments", category: "Wealth", query: "india stock market nifty portfolio allocation", take: 2 },
+  { section: "Insurance", category: "Wealth", query: "india health insurance life cover premium policy", take: 3 },
+  { section: "Insurance", category: "Home", query: "india term insurance claim settlement mediclaim", take: 2 },
 ];
 
 let cache: CachedNews | null = null;
 
-const LIVE_NEWS_CACHE_SECONDS = clampNumber(process.env.LIVE_NEWS_CACHE_SECONDS, 120, 30, 900);
+const LIVE_NEWS_CACHE_SECONDS = clampNumber(process.env.LIVE_NEWS_CACHE_SECONDS, 45, 15, 900);
 const LIVE_NEWS_REQUEST_TIMEOUT_MS = clampNumber(process.env.LIVE_NEWS_REQUEST_TIMEOUT_MS, 4500, 2000, 15000);
 const LIVE_NEWS_MAX_ITEMS = clampNumber(process.env.LIVE_NEWS_MAX_ITEMS, 20, 8, 40);
 
@@ -69,7 +70,37 @@ function decodeXmlEntities(value: string): string {
     .replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
+    .replace(/&nbsp;/g, " ")
     .trim();
+}
+
+function stripHtml(value: string): string {
+  return value
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizeSummary(value: string | undefined): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  const cleaned = stripHtml(decodeXmlEntities(value))
+    .replace(/Read more\.?$/i, "")
+    .replace(/\s+-\s+[^-]{2,120}$/g, "")
+    .trim();
+
+  if (!cleaned) {
+    return undefined;
+  }
+
+  const maxLength = 220;
+  if (cleaned.length <= maxLength) {
+    return cleaned;
+  }
+
+  return `${cleaned.slice(0, maxLength - 1).trim()}...`;
 }
 
 function extractTag(block: string, tag: string): string | undefined {
@@ -80,18 +111,19 @@ function extractTag(block: string, tag: string): string | undefined {
   return decodeXmlEntities(match[1]);
 }
 
-function parseItems(xml: string): Array<{ title: string; url: string; source: string; publishedAt?: string }> {
+function parseItems(xml: string): Array<{ title: string; url: string; source: string; publishedAt?: string; summary?: string }> {
   const itemMatches = xml.match(/<item>[\s\S]*?<\/item>/gi) ?? [];
-  const parsed: Array<{ title: string; url: string; source: string; publishedAt?: string }> = [];
+  const parsed: Array<{ title: string; url: string; source: string; publishedAt?: string; summary?: string }> = [];
 
   for (const item of itemMatches) {
     const title = extractTag(item, "title");
     const url = extractTag(item, "link");
     const source = extractTag(item, "source") ?? "News";
     const publishedAt = extractTag(item, "pubDate");
+    const summary = normalizeSummary(extractTag(item, "description"));
 
     if (title && url) {
-      parsed.push({ title, url, source, publishedAt });
+      parsed.push({ title, url, source, publishedAt, summary });
     }
   }
 
@@ -141,6 +173,7 @@ async function buildCards(): Promise<{ cards: LiveNewsCard[]; sourceCount: numbe
       const parsed = parseItems(xml).slice(0, item.take);
       return {
         section: item.section,
+        category: item.category,
         parsed,
       };
     }),
@@ -162,6 +195,8 @@ async function buildCards(): Promise<{ cards: LiveNewsCard[]; sourceCount: numbe
         source: news.source,
         publishedAt: news.publishedAt,
         section: result.value.section,
+        category: result.value.category,
+        summary: news.summary,
       });
     }
   }
