@@ -10,8 +10,90 @@ import { RecommendationCard, UserSession } from "../types.js";
 
 type Route = "concierge_agent" | "navigator_agent" | "recommendation_agent" | "response_composer";
 type PostRecommendationRoute = "cross_sell_agent" | "response_composer";
+type ToolAction = "risk-profiler" | "goal-planner" | "fund-screener" | "spend-analyzer";
 
 const kgRepository = KGRepository.fromFile();
+
+const TOOL_CARD_ID_BY_ACTION: Record<ToolAction, string> = {
+  "risk-profiler": "tool-risk-profiler",
+  "goal-planner": "tool-markets-diversification-check",
+  "fund-screener": "tool-markets-tax-saving-funds",
+  "spend-analyzer": "tool-cards-spend-analyzer",
+};
+
+function detectRequestedToolAction(message: string): ToolAction | undefined {
+  const normalized = message.toLowerCase();
+
+  if (
+    normalized.includes("risk profiler") ||
+    normalized.includes("risk profile") ||
+    normalized.includes("risk assessment")
+  ) {
+    return "risk-profiler";
+  }
+
+  if (normalized.includes("goal planner") || normalized.includes("goal planning")) {
+    return "goal-planner";
+  }
+
+  if (
+    normalized.includes("fund screener") ||
+    normalized.includes("tax saving fund") ||
+    normalized.includes("mutual fund screener")
+  ) {
+    return "fund-screener";
+  }
+
+  if (
+    normalized.includes("spend analyzer") ||
+    normalized.includes("expense analyzer") ||
+    normalized.includes("spending analyzer")
+  ) {
+    return "spend-analyzer";
+  }
+
+  return undefined;
+}
+
+function prioritizeRequestedToolRecommendation(
+  recommendations: RecommendationCard[],
+  requestedToolAction: ToolAction | undefined,
+): RecommendationCard[] {
+  if (!requestedToolAction) {
+    return recommendations;
+  }
+
+  const targetCardId = TOOL_CARD_ID_BY_ACTION[requestedToolAction];
+  const existingIndex = recommendations.findIndex(
+    (item) => item.id === targetCardId || item.toolAction === requestedToolAction,
+  );
+
+  if (existingIndex >= 0) {
+    const target = recommendations[existingIndex];
+    return [
+      target,
+      ...recommendations.filter((_, idx) => idx !== existingIndex),
+    ];
+  }
+
+  const fallbackTool = kgRepository.all().find((item) => item.id === targetCardId);
+  if (!fallbackTool) {
+    return recommendations;
+  }
+
+  const forcedCard: RecommendationCard = {
+    ...(fallbackTool.type === "tool" ? deriveToolMetadataFromCardId(fallbackTool.id) : undefined),
+    id: fallbackTool.id,
+    title: fallbackTool.title,
+    type: fallbackTool.type,
+    why: "",
+    cta: fallbackTool.ctaLabel,
+    url: fallbackTool.ctaUrl,
+    score: 0.91,
+  };
+
+  return [forcedCard, ...recommendations];
+}
 
 function applyStrategyTypePreference(
   recommendations: RecommendationCard[],
@@ -50,6 +132,10 @@ function applyStrategyTypePreference(
 function inferLatestGoal(input: { message: string; pageTopic: string; fallbackIntent?: string }): string {
   const messageText = input.message.toLowerCase();
   const pageTopicText = input.pageTopic.toLowerCase();
+
+  if (detectRequestedToolAction(input.message) === "risk-profiler") {
+    return "portfolio diversification";
+  }
 
   if (isEducationalQuery(input.message)) {
     return "learn basics";
@@ -119,6 +205,10 @@ function applySessionHistoryRefinement(
 }
 
 function shouldBypassProfilingForDirectChat(message: string): boolean {
+  if (detectRequestedToolAction(message)) {
+    return true;
+  }
+
   if (isEducationalQuery(message)) {
     return true;
   }
@@ -136,6 +226,10 @@ function shouldBypassProfilingForDirectChat(message: string): boolean {
     "invest",
     "fd",
     "inflation",
+    "risk",
+    "planner",
+    "screener",
+    "analyzer",
   ];
 
   return financeSignals.some((signal) => normalized.includes(signal));
@@ -240,6 +334,12 @@ function shouldSurfaceRecommendations(input: {
     "event",
     "show options",
     "give me options",
+    "risk profiler",
+    "risk profile",
+    "risk assessment",
+    "goal planner",
+    "fund screener",
+    "spend analyzer",
   ].some((keyword) => normalized.includes(keyword));
 
   const urgentGap = input.gapLabel === "DEBT_STRESS";
@@ -679,6 +779,7 @@ const recommendationAgentNode = async (state: typeof GraphState.State) => {
   const intent = state.session.intents[0];
   const persona = state.session.persona;
   const educationalTurn = isEducationalQuery(state.message);
+  const requestedToolAction = detectRequestedToolAction(state.message);
 
   const latestGoal = inferLatestGoal({
     message: state.message,
@@ -729,6 +830,11 @@ const recommendationAgentNode = async (state: typeof GraphState.State) => {
     computedRecommendations = applySessionHistoryRefinement(
       computedRecommendations,
       state.session.recommendationHistory,
+    );
+
+    computedRecommendations = prioritizeRequestedToolRecommendation(
+      computedRecommendations,
+      requestedToolAction,
     );
 
     computedRecommendations = computedRecommendations.slice(0, 3);
