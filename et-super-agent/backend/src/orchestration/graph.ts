@@ -573,6 +573,40 @@ function buildProfileFallbackMessage(input: {
   return `${greeting} ${PROFILE_QUESTIONS[input.nextField]}`;
 }
 
+function asksForName(text: string): boolean {
+  const normalized = text.toLowerCase();
+  return (
+    normalized.includes("what's your name") ||
+    normalized.includes("what is your name") ||
+    normalized.includes("your name, please") ||
+    normalized.includes("may i know your name") ||
+    normalized.includes("could you tell me your name")
+  );
+}
+
+function isValidProfileQuestionMessage(input: {
+  message: string;
+  nextField: ProfileField;
+  hasName: boolean;
+}): boolean {
+  const normalized = input.message.toLowerCase();
+
+  if (input.hasName && input.nextField !== "name" && asksForName(normalized)) {
+    return false;
+  }
+
+  const requiredHints: Record<ProfileField, string[]> = {
+    name: ["name"],
+    incomeRange: ["income", "lpa", "earning", "salary", "bracket"],
+    riskPreference: ["risk", "conservative", "moderate", "aggressive"],
+    topGoal: ["goal", "tax", "invest", "debt", "savings", "wealth"],
+    loanStatus: ["loan", "emi", "debt", "credit"],
+  };
+
+  const hints = requiredHints[input.nextField];
+  return hints.some((hint) => normalized.includes(hint));
+}
+
 async function buildConciergeMessageWithLlm(input: {
   session: UserSession;
   userMessage: string;
@@ -705,6 +739,7 @@ const conciergeAgentNode = async (state: typeof GraphState.State) => {
   if (!state.session.profileComplete) {
     const nextField = getFirstMissingField(existingAnswers) ?? "incomeRange";
     const firstName = existingAnswers.name;
+    const hasName = Boolean(firstName);
 
     const fallbackMessage = buildProfileFallbackMessage({
       firstName,
@@ -715,12 +750,20 @@ const conciergeAgentNode = async (state: typeof GraphState.State) => {
     const llmMessage = await buildConciergeMessageWithLlm({
       session: state.session,
       userMessage: state.message,
-      instruction: `Continue profiling. Ask exactly one question for the next field: ${nextField}. If name is known, use it naturally.`,
+      instruction: `Continue profiling. Ask exactly one question for the next field: ${nextField}. Never ask for fields that are already known. If name is already known, do not ask for name again.`,
     });
+
+    const assistantMessage = llmMessage && isValidProfileQuestionMessage({
+      message: llmMessage,
+      nextField,
+      hasName,
+    })
+      ? llmMessage
+      : fallbackMessage;
 
     return {
       session: state.session,
-      assistantMessage: llmMessage ?? fallbackMessage,
+      assistantMessage,
       nextQuestion: undefined,
       recommendations: [],
       route: "response_composer" as Route,
