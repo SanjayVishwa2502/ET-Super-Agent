@@ -33,16 +33,29 @@ function firstNonEmpty(...values: Array<string | undefined>): string | undefined
   return undefined;
 }
 
+function normalizePostgresUrl(rawUrl: string): string {
+  try {
+    const parsed = new URL(rawUrl);
+
+    // Supabase integrations may append vendor-specific params that are not required by pg.
+    parsed.searchParams.delete("supa");
+
+    return parsed.toString();
+  } catch {
+    return rawUrl;
+  }
+}
+
 function resolvePostgresConnectionString(): string | undefined {
   const direct = firstNonEmpty(
-    process.env.POSTGRES_URL,
     process.env.DATABASE_URL,
-    process.env.POSTGRES_PRISMA_URL,
     process.env.POSTGRES_URL_NON_POOLING,
+    process.env.POSTGRES_URL,
+    process.env.POSTGRES_PRISMA_URL,
   );
 
   if (direct) {
-    return direct;
+    return normalizePostgresUrl(direct);
   }
 
   const host = firstNonEmpty(process.env.POSTGRES_HOST);
