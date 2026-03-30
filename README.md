@@ -99,6 +99,11 @@ After both servers are running:
 - Dashboard payload: GET http://localhost:4040/api/dashboard/news
 - Validation scenarios: GET http://localhost:4040/api/validation/run-scenarios
 
+`GET /api/health` now also reports `profileStore.mode`:
+- `kv`: persistent database-backed storage configured.
+- `tmp-file`: ephemeral fallback in serverless environment.
+- `file`: local file-based storage.
+
 ## Production Account Persistence
 
 For stable account login/signup persistence in production, configure Vercel KV (or Upstash Redis REST) for backend profile storage:

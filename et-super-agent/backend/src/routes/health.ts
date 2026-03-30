@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { llm } from "../services/llmService.js";
+import { profileStoreMeta } from "../store/profileStore.js";
 
 export const healthRouter = Router();
 
@@ -9,6 +10,9 @@ healthRouter.get("/health", async (_req, res) => {
   res.json({
     ok: true,
     service: "et-super-agent-backend",
+    profileStore: {
+      mode: profileStoreMeta.mode,
+    },
     llm: {
       enabled: llm.isEnabled,
       available: llmHealthy,

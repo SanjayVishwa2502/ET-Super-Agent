@@ -15,6 +15,12 @@ function kvConfigured(): boolean {
   return Boolean(KV_REST_API_URL && KV_REST_API_TOKEN);
 }
 
+function currentStoreMode(): "kv" | "tmp-file" | "file" {
+  if (kvConfigured()) return "kv";
+  if (process.env.VERCEL) return "tmp-file";
+  return "file";
+}
+
 async function kvCommand(args: string[]): Promise<unknown> {
   if (!KV_REST_API_URL || !KV_REST_API_TOKEN) {
     throw new Error("KV not configured");
@@ -335,4 +341,8 @@ export const profileStore = {
   save,
   createSubProfile,
   deleteSubProfile,
+};
+
+export const profileStoreMeta = {
+  mode: currentStoreMode(),
 };
