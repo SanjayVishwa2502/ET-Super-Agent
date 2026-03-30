@@ -38,7 +38,7 @@ function isExpired(expiresAt: string, nowIso: string): boolean {
 async function cleanupExpiredSessions(nowIso: string): Promise<void> {
   const db = await getSqlDatabase();
   await db.run(
-    `DELETE FROM sessions WHERE expires_at <= ?`,
+    `DELETE FROM et_sessions WHERE expires_at <= ?`,
     [nowIso],
   );
 
@@ -65,7 +65,7 @@ async function get(sessionId: string): Promise<UserSession | undefined> {
   const row = await db.queryOne<SessionRow>(
     `
       SELECT session_id, session_json, expires_at, updated_at
-      FROM sessions
+      FROM et_sessions
       WHERE session_id = ?
       LIMIT 1
     `,
@@ -78,7 +78,7 @@ async function get(sessionId: string): Promise<UserSession | undefined> {
 
   if (isExpired(row.expires_at, nowIso)) {
     await db.run(
-      `DELETE FROM sessions WHERE session_id = ?`,
+      `DELETE FROM et_sessions WHERE session_id = ?`,
       [sessionId],
     );
     return undefined;
@@ -93,7 +93,7 @@ async function get(sessionId: string): Promise<UserSession | undefined> {
     return parsed;
   } catch {
     await db.run(
-      `DELETE FROM sessions WHERE session_id = ?`,
+      `DELETE FROM et_sessions WHERE session_id = ?`,
       [sessionId],
     );
     return undefined;
@@ -111,7 +111,7 @@ async function set(session: UserSession): Promise<void> {
   const db = await getSqlDatabase();
   await db.run(
     `
-      INSERT INTO sessions (session_id, session_json, expires_at, updated_at)
+      INSERT INTO et_sessions (session_id, session_json, expires_at, updated_at)
       VALUES (?, ?, ?, ?)
       ON CONFLICT(session_id)
       DO UPDATE SET

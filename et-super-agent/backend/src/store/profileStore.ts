@@ -178,7 +178,7 @@ async function getSubProfiles(profileId: string): Promise<SubProfile[]> {
   const rows = await db.query<SubProfileRow>(
     `
       SELECT id, profile_id, name, description, tags, extracted_context, created_at
-      FROM sub_profiles
+      FROM et_sub_profiles
       WHERE profile_id = ?
       ORDER BY created_at ASC
     `,
@@ -222,7 +222,7 @@ async function findProfileRowById(profileId: string): Promise<ProfileRow | undef
       SELECT profile_id, account_ref, profile_answers, email, password_hash,
              profile_complete, behavior_doc, login_count, last_login_at,
              created_at, updated_at
-      FROM profiles
+      FROM et_profiles
       WHERE profile_id = ?
       LIMIT 1
     `,
@@ -237,7 +237,7 @@ async function findProfileRowByEmail(email: string): Promise<ProfileRow | undefi
       SELECT profile_id, account_ref, profile_answers, email, password_hash,
              profile_complete, behavior_doc, login_count, last_login_at,
              created_at, updated_at
-      FROM profiles
+      FROM et_profiles
       WHERE email = ?
       LIMIT 1
     `,
@@ -254,7 +254,7 @@ async function insertProfile(profile: PersistedProfile): Promise<void> {
 
   await db.run(
     `
-      INSERT INTO profiles (
+      INSERT INTO et_profiles (
         profile_id, account_ref, profile_answers, email, password_hash,
         profile_complete, behavior_doc, login_count, last_login_at,
         created_at, updated_at
@@ -281,7 +281,7 @@ async function updateProfile(profile: PersistedProfile): Promise<void> {
 
   await db.run(
     `
-      UPDATE profiles
+      UPDATE et_profiles
       SET
         account_ref = ?,
         profile_answers = ?,
@@ -315,7 +315,7 @@ function isUniqueEmailError(error: unknown): boolean {
   }
 
   return (
-    error.message.includes("UNIQUE constraint failed: profiles.email") ||
+    error.message.includes("UNIQUE constraint failed: et_profiles.email") ||
     error.message.includes("duplicate key value")
   );
 }
@@ -327,7 +327,7 @@ async function getAll(): Promise<PersistedProfile[]> {
       SELECT profile_id, account_ref, profile_answers, email, password_hash,
              profile_complete, behavior_doc, login_count, last_login_at,
              created_at, updated_at
-      FROM profiles
+      FROM et_profiles
       ORDER BY updated_at DESC
     `,
   );
@@ -492,7 +492,7 @@ async function createSubProfile(
   const db = await getSqlDatabase();
   await db.run(
     `
-      INSERT INTO sub_profiles (
+      INSERT INTO et_sub_profiles (
         id, profile_id, name, description, tags, extracted_context, created_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?)
     `,
@@ -508,7 +508,7 @@ async function createSubProfile(
   );
 
   await db.run(
-    `UPDATE profiles SET updated_at = ? WHERE profile_id = ?`,
+    `UPDATE et_profiles SET updated_at = ? WHERE profile_id = ?`,
     [now, profileId],
   );
 
@@ -524,7 +524,7 @@ async function deleteSubProfile(profileId: string, subProfileId: string): Promis
   const db = await getSqlDatabase();
   const changes = await db.run(
     `
-      DELETE FROM sub_profiles
+      DELETE FROM et_sub_profiles
       WHERE profile_id = ? AND id = ?
     `,
     [profileId, subProfileId],
@@ -532,7 +532,7 @@ async function deleteSubProfile(profileId: string, subProfileId: string): Promis
 
   if (changes > 0) {
     await db.run(
-      `UPDATE profiles SET updated_at = ? WHERE profile_id = ?`,
+      `UPDATE et_profiles SET updated_at = ? WHERE profile_id = ?`,
       [new Date().toISOString(), profileId],
     );
   }

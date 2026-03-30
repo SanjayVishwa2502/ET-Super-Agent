@@ -252,7 +252,7 @@ async function persistSqlJsDatabase(db: SqlJsDatabase, filePath: string): Promis
 
 async function ensureSchema(adapter: SqlDatabaseAdapter): Promise<void> {
   await adapter.run(`
-    CREATE TABLE IF NOT EXISTS profiles (
+    CREATE TABLE IF NOT EXISTS et_profiles (
       profile_id TEXT PRIMARY KEY,
       account_ref TEXT,
       profile_answers TEXT NOT NULL,
@@ -267,11 +267,11 @@ async function ensureSchema(adapter: SqlDatabaseAdapter): Promise<void> {
     )
   `);
 
-  await adapter.run(`CREATE INDEX IF NOT EXISTS idx_profiles_email ON profiles(email)`);
-  await adapter.run(`CREATE INDEX IF NOT EXISTS idx_profiles_updated_at ON profiles(updated_at)`);
+  await adapter.run(`CREATE INDEX IF NOT EXISTS idx_et_profiles_email ON et_profiles(email)`);
+  await adapter.run(`CREATE INDEX IF NOT EXISTS idx_et_profiles_updated_at ON et_profiles(updated_at)`);
 
   await adapter.run(`
-    CREATE TABLE IF NOT EXISTS sub_profiles (
+    CREATE TABLE IF NOT EXISTS et_sub_profiles (
       id TEXT PRIMARY KEY,
       profile_id TEXT NOT NULL,
       name TEXT NOT NULL,
@@ -279,14 +279,14 @@ async function ensureSchema(adapter: SqlDatabaseAdapter): Promise<void> {
       tags TEXT NOT NULL,
       extracted_context TEXT,
       created_at TEXT NOT NULL,
-      FOREIGN KEY(profile_id) REFERENCES profiles(profile_id) ON DELETE CASCADE
+      FOREIGN KEY(profile_id) REFERENCES et_profiles(profile_id) ON DELETE CASCADE
     )
   `);
 
-  await adapter.run(`CREATE INDEX IF NOT EXISTS idx_sub_profiles_profile_id ON sub_profiles(profile_id)`);
+  await adapter.run(`CREATE INDEX IF NOT EXISTS idx_et_sub_profiles_profile_id ON et_sub_profiles(profile_id)`);
 
   await adapter.run(`
-    CREATE TABLE IF NOT EXISTS sessions (
+    CREATE TABLE IF NOT EXISTS et_sessions (
       session_id TEXT PRIMARY KEY,
       session_json TEXT NOT NULL,
       expires_at TEXT NOT NULL,
@@ -294,7 +294,7 @@ async function ensureSchema(adapter: SqlDatabaseAdapter): Promise<void> {
     )
   `);
 
-  await adapter.run(`CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at)`);
+  await adapter.run(`CREATE INDEX IF NOT EXISTS idx_et_sessions_expires_at ON et_sessions(expires_at)`);
 }
 
 export async function getSqlDatabase(): Promise<SqlDatabaseAdapter> {
