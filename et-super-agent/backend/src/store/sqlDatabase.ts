@@ -130,7 +130,17 @@ function toPostgresParams(sql: string): string {
 }
 
 async function createPostgresAdapter(connectionString: string): Promise<SqlDatabaseAdapter> {
-  const pool = new Pool({ connectionString });
+  const rejectUnauthorizedRaw = process.env.POSTGRES_SSL_REJECT_UNAUTHORIZED?.trim().toLowerCase();
+  const rejectUnauthorized = rejectUnauthorizedRaw
+    ? rejectUnauthorizedRaw !== "false"
+    : false;
+
+  const pool = new Pool({
+    connectionString,
+    ssl: {
+      rejectUnauthorized,
+    },
+  });
 
   const adapter: SqlDatabaseAdapter = {
     mode: "postgres",

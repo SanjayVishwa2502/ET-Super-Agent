@@ -110,6 +110,7 @@ For stable account login/signup persistence in production, configure SQL storage
 
 - Preferred on Vercel: set `POSTGRES_URL` (or `DATABASE_URL`) from Vercel Postgres.
 - Also supported automatically: `POSTGRES_PRISMA_URL`, `POSTGRES_URL_NON_POOLING`, or component vars like `POSTGRES_HOST`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DATABASE`.
+- If health reports SSL chain errors, set `POSTGRES_SSL_REJECT_UNAUTHORIZED=false`.
 - Local development: use SQLite default path (`backend/data/et-super-agent.db`) or override with `SQLITE_DB_PATH`.
 - Optional session control: `SESSION_TTL_SECONDS`.
 
