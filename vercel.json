@@ -3,5 +3,11 @@
   "framework": null,
   "installCommand": "npm install",
   "buildCommand": "npm run build",
-  "outputDirectory": "et-super-agent/frontend/dist"
+  "outputDirectory": "et-super-agent/frontend/dist",
+  "rewrites": [
+    {
+      "source": "/api/(.*)",
+      "destination": "/api?path=$1"
+    }
+  ]
 }
