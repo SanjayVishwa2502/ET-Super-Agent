@@ -81,10 +81,45 @@ function extractMessageFromUnknown(value: unknown): string | null {
   return String(value);
 }
 
+function extractValidationDetails(details: unknown): string | null {
+  if (!details || typeof details !== 'object') return null;
+
+  const candidate = details as Record<string, unknown>;
+  const messages: string[] = [];
+
+  const formErrors = candidate.formErrors;
+  if (Array.isArray(formErrors)) {
+    for (const err of formErrors) {
+      const text = extractMessageFromUnknown(err);
+      if (text) messages.push(text);
+    }
+  }
+
+  const fieldErrors = candidate.fieldErrors;
+  if (fieldErrors && typeof fieldErrors === 'object') {
+    for (const [field, raw] of Object.entries(fieldErrors as Record<string, unknown>)) {
+      const text = extractMessageFromUnknown(raw);
+      if (text) messages.push(`${toTitleCase(field)}: ${text}`);
+    }
+  }
+
+  if (messages.length === 0) return null;
+  return messages.join(' ');
+}
+
 function getApiErrorMessage(error: unknown, fallback = 'Something went wrong.'): string {
   if (axios.isAxiosError(error)) {
     const status = error.response?.status;
     const requestUrl = error.config?.url ?? '';
+    const responseData = error.response?.data as Record<string, unknown> | undefined;
+
+    if (responseData && /invalid payload/i.test(String(responseData.error ?? ''))) {
+      const detailText = extractValidationDetails(responseData.details);
+      if (detailText) {
+        return `Invalid payload: ${detailText}`;
+      }
+    }
+
     const fromBody = extractMessageFromUnknown(error.response?.data);
     if (status === 404 && requestUrl.includes('/api/')) {
       if (fromBody && /not found|the page could not be found/i.test(fromBody)) {
@@ -296,6 +331,11 @@ export default function App() {
 
   const signUp = async () => {
     if (!registerName.trim() || !registerEmail.trim() || !registerPassword.trim()) return;
+    if (registerPassword.trim().length < 6) {
+      setAuthError('Password must be at least 6 characters.');
+      setAuthInfo(null);
+      return;
+    }
     setSessionBooting(true);
     setAuthError(null);
     setAuthInfo(null);
@@ -985,6 +1025,7 @@ export default function App() {
                       value={registerPassword}
                       onChange={(e) => setRegisterPassword(e.target.value)}
                       type="password"
+                      minLength={6}
                       placeholder="At least 6 characters"
                       className="w-full mt-1.5 border border-stone-300 rounded-xl px-3 py-2.5 text-sm bg-stone-50"
                     />
@@ -995,7 +1036,7 @@ export default function App() {
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-1">
                 <button
                   type="submit"
-                  disabled={sessionBooting || (authMode === 'signin' ? (!loginEmail.trim() || !loginPassword.trim()) : (!registerName.trim() || !registerEmail.trim() || !registerPassword.trim()))}
+                  disabled={sessionBooting || (authMode === 'signin' ? (!loginEmail.trim() || !loginPassword.trim()) : (!registerName.trim() || !registerEmail.trim() || registerPassword.trim().length < 6))}
                   className="bg-black text-white rounded-xl px-3 py-2.5 text-sm font-semibold disabled:opacity-50"
                 >
                   {authMode === 'signin' ? 'Sign In' : 'Create Account'}
