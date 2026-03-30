@@ -41,11 +41,14 @@ export type UserSession = {
 
 export type PersistedProfile = {
   profileId: string;
+  accountRef?: string;
   profileAnswers: Record<string, string>;
   email?: string;
   passwordHash?: string;
   profileComplete: boolean;
   subProfiles?: SubProfile[];
+  loginCount?: number;
+  lastLoginAt?: string;
   createdAt: string;
   updatedAt: string;
 };

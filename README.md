@@ -17,7 +17,7 @@ ET Hackathon/
 
 - Frontend: React 18, Vite, TypeScript, Axios, Tailwind CSS
 - Backend: Node.js, Express, TypeScript, LangGraph, Zod
-- Data: JSON profile persistence + mock repositories (users, articles, products)
+- Data: Vercel KV/Upstash (when configured) with JSON fallback + mock repositories (users, articles, products)
 - Optional LLM providers: OpenRouter, Groq, Hugging Face, Local Ollama
 
 ## Prerequisites
@@ -98,6 +98,16 @@ After both servers are running:
 - Health check: GET http://localhost:4040/api/health
 - Dashboard payload: GET http://localhost:4040/api/dashboard/news
 - Validation scenarios: GET http://localhost:4040/api/validation/run-scenarios
+
+## Production Account Persistence
+
+For stable account login/signup persistence in production, configure Vercel KV (or Upstash Redis REST) for backend profile storage:
+
+- `KV_REST_API_URL`
+- `KV_REST_API_TOKEN`
+- Optional: `PROFILE_STORE_KEY` (default `et-super-agent:profiles:v1`)
+
+If KV is not configured, backend falls back to file storage. In serverless environments this fallback can be ephemeral, so users may need to re-register after cold starts/redeploys.
 
 ## Core Source Locations
 

@@ -1036,7 +1036,7 @@ export default function App() {
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-1">
                 <button
                   type="submit"
-                  disabled={sessionBooting || (authMode === 'signin' ? (!loginEmail.trim() || !loginPassword.trim()) : (!registerName.trim() || !registerEmail.trim() || registerPassword.trim().length < 6))}
+                  disabled={sessionBooting || (authMode === 'signin' ? (!loginEmail.trim() || !loginPassword.trim()) : (!registerName.trim() || !registerEmail.trim() || !registerPassword.trim()))}
                   className="bg-black text-white rounded-xl px-3 py-2.5 text-sm font-semibold disabled:opacity-50"
                 >
                   {authMode === 'signin' ? 'Sign In' : 'Create Account'}

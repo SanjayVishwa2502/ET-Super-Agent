@@ -7,6 +7,35 @@ import { PersistedProfile } from "../types.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const KV_REST_API_URL = process.env.KV_REST_API_URL?.trim();
+const KV_REST_API_TOKEN = process.env.KV_REST_API_TOKEN?.trim();
+const PROFILES_KV_KEY = process.env.PROFILE_STORE_KEY?.trim() || "et-super-agent:profiles:v1";
+
+function kvConfigured(): boolean {
+  return Boolean(KV_REST_API_URL && KV_REST_API_TOKEN);
+}
+
+async function kvCommand(args: string[]): Promise<unknown> {
+  if (!KV_REST_API_URL || !KV_REST_API_TOKEN) {
+    throw new Error("KV not configured");
+  }
+
+  const res = await fetch(KV_REST_API_URL, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${KV_REST_API_TOKEN}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(args),
+  });
+
+  if (!res.ok) {
+    throw new Error(`KV command failed with status ${res.status}`);
+  }
+
+  const payload = await res.json() as { result?: unknown };
+  return payload.result;
+}
 
 function resolveProfilesFilePath(): string {
   const configuredPath = process.env.PROFILE_STORE_PATH?.trim();
@@ -46,6 +75,20 @@ async function ensureStoreFile(): Promise<void> {
 }
 
 async function readProfiles(): Promise<PersistedProfile[]> {
+  if (kvConfigured()) {
+    try {
+      const result = await kvCommand(["GET", PROFILES_KV_KEY]);
+      if (typeof result !== "string") {
+        return [];
+      }
+
+      const parsed = JSON.parse(result) as PersistedProfile[];
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (err) {
+      console.warn("KV read failed, falling back to file storage:", err);
+    }
+  }
+
   await ensureStoreFile();
   try {
     const raw = await fs.readFile(profilesFilePath, "utf-8");
@@ -57,6 +100,15 @@ async function readProfiles(): Promise<PersistedProfile[]> {
 }
 
 async function writeProfiles(profiles: PersistedProfile[]): Promise<void> {
+  if (kvConfigured()) {
+    try {
+      await kvCommand(["SET", PROFILES_KV_KEY, JSON.stringify(profiles)]);
+      return;
+    } catch (err) {
+      console.warn("KV write failed, falling back to file storage:", err);
+    }
+  }
+
   await ensureStoreFile();
   await fs.writeFile(profilesFilePath, `${JSON.stringify(profiles, null, 2)}\n`, "utf-8");
 }
@@ -71,6 +123,11 @@ function normalizeEmail(email: string): string {
 
 function hashPassword(password: string): string {
   return crypto.createHash("sha256").update(password).digest("hex");
+}
+
+function makeAccountRef(profileId: string): string {
+  const short = profileId.replace(/-/g, "").slice(0, 8).toUpperCase();
+  return `ETA-${short}`;
 }
 
 function mergeAnswers(
@@ -129,13 +186,16 @@ async function register(input: RegisterInput): Promise<PersistedProfile> {
 
   const created: PersistedProfile = {
     profileId: uuidv4(),
+    accountRef: "",
     profileAnswers,
     email: normalizedEmail,
     passwordHash: hashPassword(input.password),
     profileComplete: isProfileComplete(profileAnswers),
+    loginCount: 0,
     createdAt: now,
     updatedAt: now,
   };
+  created.accountRef = makeAccountRef(created.profileId);
 
   profiles.push(created);
   await writeProfiles(profiles);
@@ -143,17 +203,32 @@ async function register(input: RegisterInput): Promise<PersistedProfile> {
 }
 
 async function verifyCredentials(input: { email: string; password: string }): Promise<PersistedProfile | undefined> {
-  const profile = await getByEmail(input.email);
-  if (!profile || !profile.passwordHash) {
+  const profiles = await readProfiles();
+  const normalizedEmail = normalizeEmail(input.email);
+  const index = profiles.findIndex((profile) => normalizeEmail(profile.email ?? "") === normalizedEmail);
+  if (index === -1) {
     return undefined;
   }
+
+  const profile = profiles[index];
+  if (!profile.passwordHash) return undefined;
 
   const providedHash = hashPassword(input.password);
   if (providedHash !== profile.passwordHash) {
     return undefined;
   }
 
-  return profile;
+  const updated: PersistedProfile = {
+    ...profile,
+    accountRef: profile.accountRef || makeAccountRef(profile.profileId),
+    loginCount: (profile.loginCount ?? 0) + 1,
+    lastLoginAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  profiles[index] = updated;
+  await writeProfiles(profiles);
+  return updated;
 }
 
 async function save(input: SaveProfileInput): Promise<PersistedProfile> {
@@ -196,6 +271,9 @@ async function save(input: SaveProfileInput): Promise<PersistedProfile> {
     createdAt: now,
     updatedAt: now,
   };
+
+  created.accountRef = makeAccountRef(created.profileId);
+  created.loginCount = 0;
 
   profiles.push(created);
   await writeProfiles(profiles);

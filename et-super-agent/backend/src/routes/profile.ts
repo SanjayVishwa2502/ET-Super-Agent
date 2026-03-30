@@ -28,15 +28,21 @@ function buildValidationMessage(details: { formErrors: string[]; fieldErrors: Re
 
 function toPublicProfile(profile: {
   profileId: string;
+  accountRef?: string;
   profileAnswers: Record<string, string>;
   profileComplete: boolean;
   subProfiles?: import("../types.js").SubProfile[];
+  loginCount?: number;
+  lastLoginAt?: string;
 }) {
   return {
     profileId: profile.profileId,
+    accountRef: profile.accountRef,
     profileAnswers: profile.profileAnswers,
     profileComplete: profile.profileComplete,
     subProfiles: profile.subProfiles || [],
+    loginCount: profile.loginCount ?? 0,
+    lastLoginAt: profile.lastLoginAt,
   };
 }
 
@@ -72,8 +78,11 @@ profileRouter.get("/profile/list", async (_req, res) => {
   res.json({
     profiles: profiles.map((profile) => ({
       profileId: profile.profileId,
+      accountRef: profile.accountRef,
       name: profile.profileAnswers.name ?? "Unknown",
       profileComplete: profile.profileComplete,
+      loginCount: profile.loginCount ?? 0,
+      lastLoginAt: profile.lastLoginAt,
       updatedAt: profile.updatedAt,
       profileAnswers: profile.profileAnswers,
     })),
