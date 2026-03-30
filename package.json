@@ -7,7 +7,8 @@
     "dev": "concurrently -n backend,frontend -c blue,green \"cd et-super-agent/backend && npm run dev\" \"cd et-super-agent/frontend && npm run dev\"",
     "dev:backend": "cd et-super-agent/backend && npm run dev",
     "dev:frontend": "cd et-super-agent/frontend && npm run dev",
-    "build": "npm run install:all && npm --prefix et-super-agent/backend run build && npm --prefix et-super-agent/frontend run build"
+    "build": "npm run install:all && npm --prefix et-super-agent/backend run build && npm --prefix et-super-agent/frontend run build",
+    "verify:deploy": "node scripts/verify-deploy.mjs"
   },
   "devDependencies": {
     "concurrently": "^9.2.1"

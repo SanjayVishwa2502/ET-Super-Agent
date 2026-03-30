@@ -7,7 +7,22 @@ import { PersistedProfile } from "../types.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const profilesFilePath = path.resolve(__dirname, "../../data/profiles.json");
+
+function resolveProfilesFilePath(): string {
+  const configuredPath = process.env.PROFILE_STORE_PATH?.trim();
+  if (configuredPath) {
+    return path.resolve(configuredPath);
+  }
+
+  // Vercel serverless runtime has writable temp storage only under /tmp.
+  if (process.env.VERCEL) {
+    return path.resolve("/tmp", "et-super-agent", "profiles.json");
+  }
+
+  return path.resolve(__dirname, "../../data/profiles.json");
+}
+
+const profilesFilePath = resolveProfilesFilePath();
 
 type SaveProfileInput = {
   profileId?: string;
