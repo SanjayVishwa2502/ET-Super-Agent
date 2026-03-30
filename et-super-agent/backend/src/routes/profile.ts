@@ -8,6 +8,24 @@ import { v4 as uuidv4 } from "uuid";
 
 export const profileRouter = Router();
 
+function buildValidationMessage(details: { formErrors: string[]; fieldErrors: Record<string, string[] | undefined> }): string | null {
+  const parts: string[] = [];
+
+  for (const entry of details.formErrors) {
+    const text = entry.trim();
+    if (text) parts.push(text);
+  }
+
+  for (const [field, errors] of Object.entries(details.fieldErrors)) {
+    if (!errors || errors.length === 0) continue;
+    const joined = errors.map((item) => item.trim()).filter(Boolean).join(", ");
+    if (joined) parts.push(`${field}: ${joined}`);
+  }
+
+  if (parts.length === 0) return null;
+  return parts.join(" | ");
+}
+
 function toPublicProfile(profile: {
   profileId: string;
   profileAnswers: Record<string, string>;
@@ -65,7 +83,12 @@ profileRouter.get("/profile/list", async (_req, res) => {
 profileRouter.post("/profile/register", async (req, res) => {
   const parsed = registerSchema.safeParse(req.body);
   if (!parsed.success) {
-    res.status(400).json({ error: "Invalid payload", details: parsed.error.flatten() });
+    const details = parsed.error.flatten();
+    const message = buildValidationMessage(details);
+    res.status(400).json({
+      error: message ? `Invalid payload: ${message}` : "Invalid payload",
+      details,
+    });
     return;
   }
 
@@ -112,7 +135,12 @@ profileRouter.post("/profile/register", async (req, res) => {
 profileRouter.post("/profile/login", async (req, res) => {
   const parsed = loginSchema.safeParse(req.body);
   if (!parsed.success) {
-    res.status(400).json({ error: "Invalid payload", details: parsed.error.flatten() });
+    const details = parsed.error.flatten();
+    const message = buildValidationMessage(details);
+    res.status(400).json({
+      error: message ? `Invalid payload: ${message}` : "Invalid payload",
+      details,
+    });
     return;
   }
 
