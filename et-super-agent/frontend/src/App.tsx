@@ -45,6 +45,66 @@ function initialsFromName(name: string): string {
   return `${parts[0][0] ?? ''}${parts[1][0] ?? ''}`.toUpperCase();
 }
 
+function extractMessageFromUnknown(value: unknown): string | null {
+  if (typeof value === 'string') {
+    const text = value.trim();
+    if (!text) return null;
+    if (/<!doctype html>|<html/i.test(text)) {
+      return 'Server returned an invalid API response. Please verify backend deployment and API URL.';
+    }
+    return text;
+  }
+
+  if (Array.isArray(value)) {
+    const nested = value
+      .map((item) => extractMessageFromUnknown(item))
+      .filter((item): item is string => Boolean(item));
+    if (nested.length > 0) return nested.join(' ');
+    return null;
+  }
+
+  if (value && typeof value === 'object') {
+    const candidate = value as Record<string, unknown>;
+    const priorityKeys = ['error', 'message', 'detail', 'reason', 'title'];
+    for (const key of priorityKeys) {
+      const nested = extractMessageFromUnknown(candidate[key]);
+      if (nested) return nested;
+    }
+
+    const nested = Object.values(candidate)
+      .map((item) => extractMessageFromUnknown(item))
+      .find((item) => Boolean(item));
+    return nested ?? null;
+  }
+
+  if (value == null) return null;
+  return String(value);
+}
+
+function getApiErrorMessage(error: unknown, fallback = 'Something went wrong.'): string {
+  if (axios.isAxiosError(error)) {
+    const fromBody = extractMessageFromUnknown(error.response?.data);
+    if (fromBody) return fromBody;
+
+    const fromErrorField = extractMessageFromUnknown(error.response?.data?.error);
+    if (fromErrorField) return fromErrorField;
+
+    if (!error.response) {
+      return 'Cannot reach the server. Please check backend availability and try again.';
+    }
+
+    const fromMessage = extractMessageFromUnknown(error.message);
+    if (fromMessage) return fromMessage;
+  }
+
+  return extractMessageFromUnknown(error) ?? fallback;
+}
+
+const API_BASE_URL = (((import.meta as unknown as { env?: Record<string, string | undefined> }).env?.VITE_API_BASE_URL) ?? '').trim();
+if (API_BASE_URL) {
+  axios.defaults.baseURL = API_BASE_URL;
+}
+
 // ─── Section icon + color mapping ─────────────────────────
 const SECTION_META: Record<string, { icon: React.ReactNode; badgeClass: string; gradient: string }> = {
   Tax: {
@@ -214,10 +274,7 @@ export default function App() {
       setAuthInfo(`Signed in as ${loadedName}.`);
     } catch (err) {
       console.error('Sign in failed:', err);
-      const detail = axios.isAxiosError(err)
-        ? (err.response?.data?.error ?? err.message)
-        : 'Unable to sign in right now.';
-      setAuthError(String(detail));
+      setAuthError(getApiErrorMessage(err, 'Unable to sign in right now.'));
       setMessages([{
         id: Date.now().toString(),
         role: 'assistant',
@@ -254,10 +311,7 @@ export default function App() {
       setAuthInfo(`Account created for ${loadedName}.`);
     } catch (err) {
       console.error('Sign up failed:', err);
-      const detail = axios.isAxiosError(err)
-        ? (err.response?.data?.error ?? err.message)
-        : 'Unable to create account right now.';
-      setAuthError(String(detail));
+      setAuthError(getApiErrorMessage(err, 'Unable to create account right now.'));
       setMessages([{
         id: Date.now().toString(),
         role: 'assistant',
@@ -329,13 +383,11 @@ export default function App() {
       setNewLensTags('');
     } catch (err) {
       console.error('Failed to create lens:', err);
-      const detail = axios.isAxiosError(err)
-        ? (err.response?.data?.error ?? err.message)
-        : 'Unable to create lens right now.';
+      const detail = getApiErrorMessage(err, 'Unable to create lens right now.');
       setMessages(prev => [...prev, {
         id: Date.now().toString(),
         role: 'assistant',
-        content: `Lens creation failed: ${String(detail)}`,
+        content: `Lens creation failed: ${detail}`,
       }]);
     } finally {
       setCreatingLens(false);
@@ -703,10 +755,8 @@ export default function App() {
       }
     } catch (err) {
       console.error("Chat error:", err);
-      const detail = axios.isAxiosError(err)
-        ? err.response?.data?.error ?? err.message
-        : 'Unexpected error';
-      setLastChatError({ text: userText, detail: String(detail) });
+      const detail = getApiErrorMessage(err, 'Unexpected error');
+      setLastChatError({ text: userText, detail });
       setMessages(prev => [...prev, {
         id: Date.now().toString(),
         role: 'assistant',
@@ -2106,10 +2156,8 @@ function ToolActionModal({
       }
     } catch (err) {
       console.error('Tool action failed:', err);
-      const detail = axios.isAxiosError(err)
-        ? err.response?.data?.error ?? err.message
-        : 'Unknown tool error';
-      setToolError(String(detail));
+      const detail = getApiErrorMessage(err, 'Unknown tool error');
+      setToolError(detail);
       onResult('Tool execution failed. Please review inputs and try again.');
     } finally {
       setSubmitting(false);
