@@ -39,6 +39,8 @@ function normalizePostgresUrl(rawUrl: string): string {
 
     // Supabase integrations may append vendor-specific params that are not required by pg.
     parsed.searchParams.delete("supa");
+    // Let pg ssl object control TLS behavior to avoid URL params overriding rejectUnauthorized.
+    parsed.searchParams.delete("sslmode");
 
     return parsed.toString();
   } catch {
