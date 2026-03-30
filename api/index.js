@@ -8,7 +8,7 @@ async function getApp() {
   return appPromise;
 }
 
-export default async function handler(req, res) {
+module.exports = async function handler(req, res) {
   const pathParam = req.query?.path;
   const rewrittenPath = Array.isArray(pathParam)
     ? pathParam.join("/")
@@ -35,4 +35,4 @@ export default async function handler(req, res) {
     res.setHeader("content-type", "application/json");
     res.end(JSON.stringify({ error: "API bootstrap failed", detail }));
   }
-}
+};
