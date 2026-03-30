@@ -84,6 +84,7 @@ export type DashboardData = {
   newsCards: NewsCard[];
   userPersonas: UserPersona[];
   liveNews?: LiveNewsCard[];
+  liveNewsMeta?: LiveNewsMeta;
 };
 
 export type LiveNewsCard = {
@@ -92,6 +93,14 @@ export type LiveNewsCard = {
   source: string;
   publishedAt?: string;
   section: "Tax" | "Loans" | "Investments" | "Insurance";
+};
+
+export type LiveNewsMeta = {
+  lastFetchedAt?: string;
+  cacheTtlSeconds: number;
+  nextRefreshInSeconds: number;
+  sourceCount: number;
+  stale: boolean;
 };
 
 export type SubProfile = {

@@ -3,20 +3,53 @@ import { LiveNewsCard } from "../types.js";
 type Section = LiveNewsCard["section"];
 
 type CachedNews = {
+  fetchedAt: number;
   expiresAt: number;
   cards: LiveNewsCard[];
+  sourceCount: number;
+};
+
+export type LiveNewsSnapshot = {
+  cards: LiveNewsCard[];
+  lastFetchedAt?: string;
+  cacheTtlSeconds: number;
+  nextRefreshInSeconds: number;
+  sourceCount: number;
+  stale: boolean;
 };
 
 const GOOGLE_NEWS_RSS = "https://news.google.com/rss/search";
 
-const QUERIES: Array<{ section: Section; query: string }> = [
-  { section: "Tax", query: "india personal finance tax filing" },
-  { section: "Loans", query: "india personal loan emi interest rate" },
-  { section: "Investments", query: "india mutual fund sip investing" },
-  { section: "Insurance", query: "india life health insurance policy" },
+const QUERIES: Array<{ section: Section; query: string; take: number }> = [
+  { section: "Tax", query: "india personal finance tax filing income tax update", take: 3 },
+  { section: "Tax", query: "india tax deduction 80c new tax regime", take: 2 },
+  { section: "Loans", query: "india personal loan emi interest rate banking", take: 3 },
+  { section: "Loans", query: "india credit card debt repayment balance transfer", take: 2 },
+  { section: "Investments", query: "india mutual fund sip investing market outlook", take: 3 },
+  { section: "Investments", query: "india stock market nifty portfolio allocation", take: 2 },
+  { section: "Insurance", query: "india health insurance life cover premium policy", take: 3 },
+  { section: "Insurance", query: "india term insurance claim settlement mediclaim", take: 2 },
 ];
 
 let cache: CachedNews | null = null;
+
+const LIVE_NEWS_CACHE_SECONDS = clampNumber(process.env.LIVE_NEWS_CACHE_SECONDS, 120, 30, 900);
+const LIVE_NEWS_REQUEST_TIMEOUT_MS = clampNumber(process.env.LIVE_NEWS_REQUEST_TIMEOUT_MS, 4500, 2000, 15000);
+const LIVE_NEWS_MAX_ITEMS = clampNumber(process.env.LIVE_NEWS_MAX_ITEMS, 20, 8, 40);
+
+function clampNumber(
+  raw: string | undefined,
+  fallback: number,
+  min: number,
+  max: number,
+): number {
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+
+  return Math.min(max, Math.max(min, Math.floor(parsed)));
+}
 
 function buildRssUrl(query: string): string {
   const params = new URLSearchParams({
@@ -67,7 +100,7 @@ function parseItems(xml: string): Array<{ title: string; url: string; source: st
 
 async function fetchRss(url: string): Promise<string> {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 4500);
+  const timeout = setTimeout(() => controller.abort(), LIVE_NEWS_REQUEST_TIMEOUT_MS);
   try {
     const response = await fetch(url, { signal: controller.signal });
     if (!response.ok) {
@@ -79,39 +112,100 @@ async function fetchRss(url: string): Promise<string> {
   }
 }
 
-export async function getLiveNewsCards(): Promise<LiveNewsCard[]> {
-  if (cache && Date.now() < cache.expiresAt) {
-    return cache.cards;
+function parsePublishedAtScore(value?: string): number {
+  if (!value) {
+    return 0;
   }
 
-  const cards: LiveNewsCard[] = [];
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
 
-  for (const item of QUERIES) {
-    try {
+function toSnapshot(cached: CachedNews, stale = false): LiveNewsSnapshot {
+  const now = Date.now();
+
+  return {
+    cards: cached.cards,
+    lastFetchedAt: new Date(cached.fetchedAt).toISOString(),
+    cacheTtlSeconds: LIVE_NEWS_CACHE_SECONDS,
+    nextRefreshInSeconds: Math.max(0, Math.ceil((cached.expiresAt - now) / 1000)),
+    sourceCount: cached.sourceCount,
+    stale,
+  };
+}
+
+async function buildCards(): Promise<{ cards: LiveNewsCard[]; sourceCount: number }> {
+  const settled = await Promise.allSettled(
+    QUERIES.map(async (item) => {
       const xml = await fetchRss(buildRssUrl(item.query));
-      const parsed = parseItems(xml).slice(0, 4);
-      for (const news of parsed) {
-        cards.push({
-          headline: news.title,
-          url: news.url,
-          source: news.source,
-          publishedAt: news.publishedAt,
-          section: item.section,
-        });
-      }
-    } catch {
-      // If one source fails, continue with remaining sections.
+      const parsed = parseItems(xml).slice(0, item.take);
+      return {
+        section: item.section,
+        parsed,
+      };
+    }),
+  );
+
+  const cards: LiveNewsCard[] = [];
+  let sourceCount = 0;
+
+  for (const result of settled) {
+    if (result.status !== "fulfilled") {
+      continue;
+    }
+
+    sourceCount += 1;
+    for (const news of result.value.parsed) {
+      cards.push({
+        headline: news.title,
+        url: news.url,
+        source: news.source,
+        publishedAt: news.publishedAt,
+        section: result.value.section,
+      });
     }
   }
 
   const unique = Array.from(
     new Map(cards.map((card) => [`${card.headline.toLowerCase()}|${card.source.toLowerCase()}`, card])).values(),
-  ).slice(0, 16);
+  )
+    .sort((a, b) => parsePublishedAtScore(b.publishedAt) - parsePublishedAtScore(a.publishedAt))
+    .slice(0, LIVE_NEWS_MAX_ITEMS);
 
-  cache = {
+  return {
     cards: unique,
-    expiresAt: Date.now() + 10 * 60 * 1000,
+    sourceCount,
   };
+}
 
-  return unique;
+export async function getLiveNewsSnapshot(options?: { forceRefresh?: boolean }): Promise<LiveNewsSnapshot> {
+  const forceRefresh = options?.forceRefresh === true;
+  if (!forceRefresh && cache && Date.now() < cache.expiresAt) {
+    return toSnapshot(cache);
+  }
+
+  try {
+    const built = await buildCards();
+    const now = Date.now();
+
+    cache = {
+      cards: built.cards,
+      fetchedAt: now,
+      expiresAt: now + LIVE_NEWS_CACHE_SECONDS * 1000,
+      sourceCount: built.sourceCount,
+    };
+
+    return toSnapshot(cache);
+  } catch {
+    if (cache) {
+      return toSnapshot(cache, true);
+    }
+
+    throw new Error("Unable to fetch live news");
+  }
+}
+
+export async function getLiveNewsCards(options?: { forceRefresh?: boolean }): Promise<LiveNewsCard[]> {
+  const snapshot = await getLiveNewsSnapshot(options);
+  return snapshot.cards;
 }

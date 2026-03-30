@@ -97,7 +97,12 @@ After both servers are running:
 
 - Health check: GET http://localhost:4040/api/health
 - Dashboard payload: GET http://localhost:4040/api/dashboard/news
+- Live feed payload: GET http://localhost:4040/api/dashboard/live-news
 - Validation scenarios: GET http://localhost:4040/api/validation/run-scenarios
+
+Live feed behavior:
+- Backend aggregates real-time Google News RSS finance feeds with short caching.
+- Frontend refreshes the live feed corner automatically every minute and supports manual sync.
 
 `GET /api/health` now reports `profileStore.mode` and `sessionStore.mode`:
 - `postgres`: durable SQL storage (recommended for Vercel production).

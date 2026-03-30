@@ -10,7 +10,7 @@ import {
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
-  Message, NewsCard, UserPersona, ActiveContextSummary, DashboardData, LiveNewsCard, SubProfile
+  Message, NewsCard, UserPersona, ActiveContextSummary, DashboardData, LiveNewsCard, LiveNewsMeta, SubProfile
 } from './types';
 
 type ProfileSummary = {
@@ -144,6 +144,40 @@ function getApiErrorMessage(error: unknown, fallback = 'Something went wrong.'):
   return extractMessageFromUnknown(error) ?? fallback;
 }
 
+function formatRelativeTimestamp(isoDate?: string): string {
+  if (!isoDate) {
+    return 'Awaiting first sync';
+  }
+
+  const parsed = Date.parse(isoDate);
+  if (!Number.isFinite(parsed)) {
+    return 'Awaiting first sync';
+  }
+
+  const diffSeconds = Math.max(0, Math.floor((Date.now() - parsed) / 1000));
+  if (diffSeconds < 30) return 'Updated just now';
+  if (diffSeconds < 60) return `Updated ${diffSeconds}s ago`;
+
+  const diffMinutes = Math.floor(diffSeconds / 60);
+  if (diffMinutes < 60) return `Updated ${diffMinutes}m ago`;
+
+  const diffHours = Math.floor(diffMinutes / 60);
+  return `Updated ${diffHours}h ago`;
+}
+
+function formatPublishedTime(isoDate?: string): string | null {
+  if (!isoDate) return null;
+  const parsed = Date.parse(isoDate);
+  if (!Number.isFinite(parsed)) return null;
+
+  return new Date(parsed).toLocaleString([], {
+    day: '2-digit',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
 const API_BASE_URL = (((import.meta as unknown as { env?: Record<string, string | undefined> }).env?.VITE_API_BASE_URL) ?? '').trim();
 if (API_BASE_URL) {
   axios.defaults.baseURL = API_BASE_URL;
@@ -199,6 +233,9 @@ export default function App() {
   const [contextSwitching, setContextSwitching] = useState(false);
   const [summarizingNews, setSummarizingNews] = useState(false);
   const [liveNews, setLiveNews] = useState<LiveNewsCard[]>([]);
+  const [liveNewsMeta, setLiveNewsMeta] = useState<LiveNewsMeta | null>(null);
+  const [liveNewsLoading, setLiveNewsLoading] = useState(false);
+  const [liveNewsError, setLiveNewsError] = useState<string | null>(null);
 
   // Persistent profile/login state
   const [authMode, setAuthMode] = useState<'signin' | 'signup'>('signin');
@@ -228,6 +265,34 @@ export default function App() {
     title: string;
   } | null>(null);
 
+  const refreshLiveNews = useCallback(async (forceRefresh = false) => {
+    setLiveNewsLoading(true);
+    setLiveNewsError(null);
+
+    try {
+      const response = await axios.get('/api/dashboard/live-news', {
+        params: forceRefresh ? { force: '1' } : undefined,
+      });
+
+      const payload = response.data as {
+        liveNews?: unknown;
+        liveNewsMeta?: unknown;
+      };
+
+      if (Array.isArray(payload.liveNews)) {
+        setLiveNews(payload.liveNews as LiveNewsCard[]);
+      }
+
+      if (payload.liveNewsMeta && typeof payload.liveNewsMeta === 'object') {
+        setLiveNewsMeta(payload.liveNewsMeta as LiveNewsMeta);
+      }
+    } catch (err) {
+      setLiveNewsError(getApiErrorMessage(err, 'Failed to refresh live feed.'));
+    } finally {
+      setLiveNewsLoading(false);
+    }
+  }, []);
+
   // ─── Fetch dashboard data on mount ───────────────────────────────────────
   useEffect(() => {
     const initializeData = async () => {
@@ -243,9 +308,14 @@ export default function App() {
           newsCards: raw.newsCards,
           userPersonas: raw.userPersonas,
           liveNews: Array.isArray(raw.liveNews) ? raw.liveNews : [],
+          liveNewsMeta:
+            raw.liveNewsMeta && typeof raw.liveNewsMeta === 'object'
+              ? (raw.liveNewsMeta as LiveNewsMeta)
+              : undefined,
         };
         setDashboardData(data);
         setLiveNews(data.liveNews ?? []);
+        setLiveNewsMeta(data.liveNewsMeta ?? null);
         if (data.userPersonas.length > 0) {
           setSelectedUser(data.userPersonas[0]);
         }
@@ -255,6 +325,16 @@ export default function App() {
     };
     initializeData();
   }, []);
+
+  useEffect(() => {
+    const intervalId = window.setInterval(() => {
+      void refreshLiveNews(false);
+    }, 60 * 1000);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [refreshLiveNews]);
 
   useEffect(() => {
     const onDocumentMouseDown = (event: MouseEvent) => {
@@ -1300,13 +1380,32 @@ export default function App() {
           {/* NEWS CARDS LIST */}
           <div className="flex-1 overflow-y-auto custom-scrollbar p-4 space-y-5">
             <div className="border border-gray-200 rounded-xl bg-gradient-to-br from-stone-50 to-white p-3">
-              <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center justify-between mb-2 gap-2">
                 <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500">Live Internet News</h3>
-                <span className="text-[10px] text-gray-400">Auto-refresh cache: 10m</span>
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] text-gray-400">
+                    {`${formatRelativeTimestamp(liveNewsMeta?.lastFetchedAt)} • cache ${liveNewsMeta?.cacheTtlSeconds ?? 0}s`}
+                  </span>
+                  <button
+                    onClick={() => void refreshLiveNews(true)}
+                    disabled={liveNewsLoading}
+                    className="inline-flex items-center gap-1 rounded-md border border-gray-200 px-1.5 py-1 text-[10px] font-semibold text-gray-600 hover:border-gray-300 disabled:opacity-60"
+                  >
+                    <RotateCcw size={10} className={liveNewsLoading ? 'animate-spin' : ''} />
+                    {liveNewsLoading ? 'Syncing' : 'Sync'}
+                  </button>
+                </div>
+              </div>
+              <div className="mb-2 text-[10px] text-gray-500">
+                Sources online: {liveNewsMeta?.sourceCount ?? 0}
+                {liveNewsMeta?.stale ? ' • showing cached feed while providers recover' : ''}
               </div>
               <div className="max-h-40 overflow-y-auto custom-scrollbar space-y-2 pr-1">
                 {liveNews.length === 0 && (
                   <div className="text-xs text-gray-500">Live feed unavailable. Showing curated ET context cards below.</div>
+                )}
+                {liveNewsError && (
+                  <div className="text-[10px] text-red-500">{liveNewsError}</div>
                 )}
                 {liveNews.map((item, idx) => (
                   <button
@@ -1316,6 +1415,9 @@ export default function App() {
                   >
                     <div className="text-[10px] uppercase tracking-wide text-gray-400 mb-1">{item.section} • {item.source}</div>
                     <div className="text-xs font-semibold text-gray-800 leading-snug">{item.headline}</div>
+                    {formatPublishedTime(item.publishedAt) && (
+                      <div className="text-[10px] text-gray-400 mt-1">{formatPublishedTime(item.publishedAt)}</div>
+                    )}
                   </button>
                 ))}
               </div>
