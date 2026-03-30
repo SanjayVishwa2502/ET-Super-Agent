@@ -83,7 +83,16 @@ function extractMessageFromUnknown(value: unknown): string | null {
 
 function getApiErrorMessage(error: unknown, fallback = 'Something went wrong.'): string {
   if (axios.isAxiosError(error)) {
+    const status = error.response?.status;
+    const requestUrl = error.config?.url ?? '';
     const fromBody = extractMessageFromUnknown(error.response?.data);
+    if (status === 404 && requestUrl.includes('/api/')) {
+      if (fromBody && /not found|the page could not be found/i.test(fromBody)) {
+        return 'Backend API is not available on this deployment. Deploy backend separately and set VITE_API_BASE_URL in frontend env.';
+      }
+      return 'API endpoint not found. Please verify backend deployment and VITE_API_BASE_URL.';
+    }
+
     if (fromBody) return fromBody;
 
     const fromErrorField = extractMessageFromUnknown(error.response?.data?.error);
