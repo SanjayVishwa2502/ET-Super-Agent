@@ -1,67 +1,7 @@
-import { promises as fs } from "fs";
-import { v4 as uuidv4 } from "uuid";
-import path from "path";
-import { fileURLToPath } from "url";
 import crypto from "crypto";
-import { BehaviorDocument, PersistedProfile } from "../types.js";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const KV_REST_API_URL =
-  process.env.KV_REST_API_URL?.trim() ||
-  process.env.UPSTASH_REDIS_REST_URL?.trim();
-const KV_REST_API_TOKEN =
-  process.env.KV_REST_API_TOKEN?.trim() ||
-  process.env.UPSTASH_REDIS_REST_TOKEN?.trim();
-const PROFILES_KV_KEY = process.env.PROFILE_STORE_KEY?.trim() || "et-super-agent:profiles:v1";
-
-function kvConfigured(): boolean {
-  return Boolean(KV_REST_API_URL && KV_REST_API_TOKEN);
-}
-
-function currentStoreMode(): "kv" | "tmp-file" | "file" {
-  if (kvConfigured()) return "kv";
-  if (process.env.VERCEL) return "tmp-file";
-  return "file";
-}
-
-async function kvCommand(args: string[]): Promise<unknown> {
-  if (!KV_REST_API_URL || !KV_REST_API_TOKEN) {
-    throw new Error("KV not configured");
-  }
-
-  const res = await fetch(KV_REST_API_URL, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${KV_REST_API_TOKEN}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(args),
-  });
-
-  if (!res.ok) {
-    throw new Error(`KV command failed with status ${res.status}`);
-  }
-
-  const payload = await res.json() as { result?: unknown };
-  return payload.result;
-}
-
-function resolveProfilesFilePath(): string {
-  const configuredPath = process.env.PROFILE_STORE_PATH?.trim();
-  if (configuredPath) {
-    return path.resolve(configuredPath);
-  }
-
-  // Vercel serverless runtime has writable temp storage only under /tmp.
-  if (process.env.VERCEL) {
-    return path.resolve("/tmp", "et-super-agent", "profiles.json");
-  }
-
-  return path.resolve(__dirname, "../../data/profiles.json");
-}
-
-const profilesFilePath = resolveProfilesFilePath();
+import { v4 as uuidv4 } from "uuid";
+import { BehaviorDocument, PersistedProfile, SubProfile } from "../types.js";
+import { getSqlDatabase, sqlDatabaseMeta } from "./sqlDatabase.js";
 
 type SaveProfileInput = {
   profileId?: string;
@@ -74,58 +14,33 @@ type RegisterInput = {
   password: string;
 };
 
+type ProfileRow = {
+  profile_id: string;
+  account_ref: string | null;
+  profile_answers: string;
+  email: string | null;
+  password_hash: string | null;
+  profile_complete: number;
+  behavior_doc: string | null;
+  login_count: number;
+  last_login_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+type SubProfileRow = {
+  id: string;
+  profile_id: string;
+  name: string;
+  description: string;
+  tags: string;
+  extracted_context: string | null;
+  created_at: string;
+};
+
 const BEHAVIOR_STOP_WORDS = new Set([
   "the", "and", "for", "that", "with", "this", "from", "have", "your", "what", "when", "where", "will", "would", "about", "there", "their", "which", "could", "should", "please", "hello", "thanks", "need", "want", "help", "just", "then", "also", "into", "after", "before", "like", "more", "very", "much", "good", "great", "okay", "ok",
 ]);
-
-async function ensureStoreFile(): Promise<void> {
-  const dir = path.dirname(profilesFilePath);
-  await fs.mkdir(dir, { recursive: true });
-  try {
-    await fs.access(profilesFilePath);
-  } catch {
-    await fs.writeFile(profilesFilePath, "[]\n", "utf-8");
-  }
-}
-
-async function readProfiles(): Promise<PersistedProfile[]> {
-  if (kvConfigured()) {
-    try {
-      const result = await kvCommand(["GET", PROFILES_KV_KEY]);
-      if (typeof result !== "string") {
-        return [];
-      }
-
-      const parsed = JSON.parse(result) as PersistedProfile[];
-      return Array.isArray(parsed) ? parsed : [];
-    } catch (err) {
-      console.warn("KV read failed, falling back to file storage:", err);
-    }
-  }
-
-  await ensureStoreFile();
-  try {
-    const raw = await fs.readFile(profilesFilePath, "utf-8");
-    const parsed = JSON.parse(raw) as PersistedProfile[];
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-}
-
-async function writeProfiles(profiles: PersistedProfile[]): Promise<void> {
-  if (kvConfigured()) {
-    try {
-      await kvCommand(["SET", PROFILES_KV_KEY, JSON.stringify(profiles)]);
-      return;
-    } catch (err) {
-      console.warn("KV write failed, falling back to file storage:", err);
-    }
-  }
-
-  await ensureStoreFile();
-  await fs.writeFile(profilesFilePath, `${JSON.stringify(profiles, null, 2)}\n`, "utf-8");
-}
 
 function normalizeName(name: string): string {
   return name.trim().toLowerCase();
@@ -246,33 +161,205 @@ function isProfileComplete(profileAnswers: Record<string, string>): boolean {
   return required.every((field) => Boolean(profileAnswers[field]));
 }
 
+function parseJson<T>(raw: unknown, fallback: T): T {
+  if (typeof raw !== "string" || raw.trim().length === 0) {
+    return fallback;
+  }
+
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+async function getSubProfiles(profileId: string): Promise<SubProfile[]> {
+  const db = await getSqlDatabase();
+  const rows = await db.query<SubProfileRow>(
+    `
+      SELECT id, profile_id, name, description, tags, extracted_context, created_at
+      FROM sub_profiles
+      WHERE profile_id = ?
+      ORDER BY created_at ASC
+    `,
+    [profileId],
+  );
+
+  return rows.map((row) => ({
+    id: row.id,
+    name: row.name,
+    description: row.description,
+    tags: parseJson<string[]>(row.tags, []),
+    extractedContext: row.extracted_context ?? undefined,
+    createdAt: row.created_at,
+  }));
+}
+
+async function mapProfileRow(row: ProfileRow): Promise<PersistedProfile> {
+  const profileAnswers = parseJson<Record<string, string>>(row.profile_answers, {});
+  const now = new Date().toISOString();
+
+  return {
+    profileId: row.profile_id,
+    accountRef: row.account_ref ?? makeAccountRef(row.profile_id),
+    profileAnswers,
+    email: row.email ?? undefined,
+    passwordHash: row.password_hash ?? undefined,
+    profileComplete: Number(row.profile_complete ?? 0) > 0,
+    subProfiles: await getSubProfiles(row.profile_id),
+    behaviorDoc: parseJson<BehaviorDocument | undefined>(row.behavior_doc, createBehaviorDocument(now)),
+    loginCount: Number(row.login_count ?? 0),
+    lastLoginAt: row.last_login_at ?? undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+async function findProfileRowById(profileId: string): Promise<ProfileRow | undefined> {
+  const db = await getSqlDatabase();
+  return db.queryOne<ProfileRow>(
+    `
+      SELECT profile_id, account_ref, profile_answers, email, password_hash,
+             profile_complete, behavior_doc, login_count, last_login_at,
+             created_at, updated_at
+      FROM profiles
+      WHERE profile_id = ?
+      LIMIT 1
+    `,
+    [profileId],
+  );
+}
+
+async function findProfileRowByEmail(email: string): Promise<ProfileRow | undefined> {
+  const db = await getSqlDatabase();
+  return db.queryOne<ProfileRow>(
+    `
+      SELECT profile_id, account_ref, profile_answers, email, password_hash,
+             profile_complete, behavior_doc, login_count, last_login_at,
+             created_at, updated_at
+      FROM profiles
+      WHERE email = ?
+      LIMIT 1
+    `,
+    [normalizeEmail(email)],
+  );
+}
+
+function toSqlBool(value: boolean): number {
+  return value ? 1 : 0;
+}
+
+async function insertProfile(profile: PersistedProfile): Promise<void> {
+  const db = await getSqlDatabase();
+
+  await db.run(
+    `
+      INSERT INTO profiles (
+        profile_id, account_ref, profile_answers, email, password_hash,
+        profile_complete, behavior_doc, login_count, last_login_at,
+        created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+    [
+      profile.profileId,
+      profile.accountRef ?? null,
+      JSON.stringify(profile.profileAnswers),
+      profile.email ?? null,
+      profile.passwordHash ?? null,
+      toSqlBool(profile.profileComplete),
+      JSON.stringify(profile.behaviorDoc ?? null),
+      profile.loginCount ?? 0,
+      profile.lastLoginAt ?? null,
+      profile.createdAt,
+      profile.updatedAt,
+    ],
+  );
+}
+
+async function updateProfile(profile: PersistedProfile): Promise<void> {
+  const db = await getSqlDatabase();
+
+  await db.run(
+    `
+      UPDATE profiles
+      SET
+        account_ref = ?,
+        profile_answers = ?,
+        email = ?,
+        password_hash = ?,
+        profile_complete = ?,
+        behavior_doc = ?,
+        login_count = ?,
+        last_login_at = ?,
+        updated_at = ?
+      WHERE profile_id = ?
+    `,
+    [
+      profile.accountRef ?? null,
+      JSON.stringify(profile.profileAnswers),
+      profile.email ?? null,
+      profile.passwordHash ?? null,
+      toSqlBool(profile.profileComplete),
+      JSON.stringify(profile.behaviorDoc ?? null),
+      profile.loginCount ?? 0,
+      profile.lastLoginAt ?? null,
+      profile.updatedAt,
+      profile.profileId,
+    ],
+  );
+}
+
+function isUniqueEmailError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  return (
+    error.message.includes("UNIQUE constraint failed: profiles.email") ||
+    error.message.includes("duplicate key value")
+  );
+}
+
 async function getAll(): Promise<PersistedProfile[]> {
-  const profiles = await readProfiles();
-  return profiles.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  const db = await getSqlDatabase();
+  const rows = await db.query<ProfileRow>(
+    `
+      SELECT profile_id, account_ref, profile_answers, email, password_hash,
+             profile_complete, behavior_doc, login_count, last_login_at,
+             created_at, updated_at
+      FROM profiles
+      ORDER BY updated_at DESC
+    `,
+  );
+
+  const profiles: PersistedProfile[] = [];
+  for (const row of rows) {
+    profiles.push(await mapProfileRow(row));
+  }
+
+  return profiles;
 }
 
 async function getById(profileId: string): Promise<PersistedProfile | undefined> {
-  const profiles = await readProfiles();
-  return profiles.find((profile) => profile.profileId === profileId);
+  const row = await findProfileRowById(profileId);
+  return row ? mapProfileRow(row) : undefined;
 }
 
 async function getByName(name: string): Promise<PersistedProfile | undefined> {
-  const profiles = await readProfiles();
   const normalized = normalizeName(name);
+  const profiles = await getAll();
   return profiles.find((profile) => normalizeName(profile.profileAnswers.name ?? "") === normalized);
 }
 
 async function getByEmail(email: string): Promise<PersistedProfile | undefined> {
-  const profiles = await readProfiles();
-  const normalized = normalizeEmail(email);
-  return profiles.find((profile) => normalizeEmail(profile.email ?? "") === normalized);
+  const row = await findProfileRowByEmail(email);
+  return row ? mapProfileRow(row) : undefined;
 }
 
 async function register(input: RegisterInput): Promise<PersistedProfile> {
-  const profiles = await readProfiles();
   const normalizedEmail = normalizeEmail(input.email);
-  const emailExists = profiles.some((profile) => normalizeEmail(profile.email ?? "") === normalizedEmail);
-  if (emailExists) {
+  const existing = await getByEmail(normalizedEmail);
+  if (existing) {
     throw new Error("EMAIL_EXISTS");
   }
 
@@ -294,135 +381,160 @@ async function register(input: RegisterInput): Promise<PersistedProfile> {
     createdAt: now,
     updatedAt: now,
   };
+
   created.accountRef = makeAccountRef(created.profileId);
 
-  profiles.push(created);
-  await writeProfiles(profiles);
-  return created;
+  try {
+    await insertProfile(created);
+  } catch (error) {
+    if (isUniqueEmailError(error)) {
+      throw new Error("EMAIL_EXISTS");
+    }
+    throw error;
+  }
+
+  return getById(created.profileId) as Promise<PersistedProfile>;
 }
 
 async function verifyCredentials(input: { email: string; password: string }): Promise<PersistedProfile | undefined> {
-  const profiles = await readProfiles();
-  const normalizedEmail = normalizeEmail(input.email);
-  const index = profiles.findIndex((profile) => normalizeEmail(profile.email ?? "") === normalizedEmail);
-  if (index === -1) {
+  const row = await findProfileRowByEmail(input.email);
+  if (!row) {
     return undefined;
   }
 
-  const profile = profiles[index];
-  if (!profile.passwordHash) return undefined;
+  const profile = await mapProfileRow(row);
+  if (!profile.passwordHash) {
+    return undefined;
+  }
 
   const providedHash = hashPassword(input.password);
   if (providedHash !== profile.passwordHash) {
     return undefined;
   }
 
+  const now = new Date().toISOString();
   const updated: PersistedProfile = {
     ...profile,
     accountRef: profile.accountRef || makeAccountRef(profile.profileId),
-    behaviorDoc: profile.behaviorDoc ?? createBehaviorDocument(new Date().toISOString()),
+    behaviorDoc: profile.behaviorDoc ?? createBehaviorDocument(now),
     loginCount: (profile.loginCount ?? 0) + 1,
-    lastLoginAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
+    lastLoginAt: now,
+    updatedAt: now,
   };
 
-  profiles[index] = updated;
-  await writeProfiles(profiles);
-  return updated;
+  await updateProfile(updated);
+  return getById(updated.profileId);
 }
 
 async function save(input: SaveProfileInput): Promise<PersistedProfile> {
-  const profiles = await readProfiles();
   const now = new Date().toISOString();
 
-  let existingIndex = -1;
+  let existing: PersistedProfile | undefined;
   if (input.profileId) {
-    existingIndex = profiles.findIndex((profile) => profile.profileId === input.profileId);
+    existing = await getById(input.profileId);
   }
 
-  if (existingIndex === -1 && input.profileAnswers.name) {
-    const normalized = normalizeName(input.profileAnswers.name);
-    existingIndex = profiles.findIndex(
-      (profile) => normalizeName(profile.profileAnswers.name ?? "") === normalized,
-    );
+  if (!existing && input.profileAnswers.name) {
+    existing = await getByName(input.profileAnswers.name);
   }
 
-  if (existingIndex >= 0) {
-    const existing = profiles[existingIndex];
+  if (existing) {
     const mergedAnswers = mergeAnswers(existing.profileAnswers, input.profileAnswers);
 
     const updated: PersistedProfile = {
       ...existing,
+      accountRef: existing.accountRef || makeAccountRef(existing.profileId),
       profileAnswers: mergedAnswers,
       profileComplete: isProfileComplete(mergedAnswers),
+      behaviorDoc: existing.behaviorDoc ?? createBehaviorDocument(now),
+      loginCount: existing.loginCount ?? 0,
       updatedAt: now,
     };
 
-    profiles[existingIndex] = updated;
-    await writeProfiles(profiles);
-    return updated;
+    await updateProfile(updated);
+    return getById(updated.profileId) as Promise<PersistedProfile>;
   }
 
   const cleanAnswers = mergeAnswers({}, input.profileAnswers);
   const created: PersistedProfile = {
     profileId: input.profileId ?? uuidv4(),
+    accountRef: "",
     profileAnswers: cleanAnswers,
     profileComplete: isProfileComplete(cleanAnswers),
     behaviorDoc: createBehaviorDocument(now),
+    loginCount: 0,
     createdAt: now,
     updatedAt: now,
   };
 
   created.accountRef = makeAccountRef(created.profileId);
-  created.loginCount = 0;
 
-  profiles.push(created);
-  await writeProfiles(profiles);
-  return created;
+  await insertProfile(created);
+  return getById(created.profileId) as Promise<PersistedProfile>;
 }
 
+async function createSubProfile(
+  profileId: string,
+  subProfileInput: Omit<SubProfile, "id" | "createdAt">,
+): Promise<SubProfile> {
+  const profile = await getById(profileId);
+  if (!profile) {
+    throw new Error("PROFILE_NOT_FOUND");
+  }
 
-async function createSubProfile(profileId: string, subProfileInput: Omit<import("../types.js").SubProfile, "id" | "createdAt">): Promise<import("../types.js").SubProfile> {
-  const profiles = await readProfiles();
-  const index = profiles.findIndex(p => p.profileId === profileId);
-  if (index === -1) throw new Error("PROFILE_NOT_FOUND");
-  
-  const existing = profiles[index];
-  const newSubProfile: import("../types.js").SubProfile = {
+  const now = new Date().toISOString();
+  const newSubProfile: SubProfile = {
     id: uuidv4(),
-    createdAt: new Date().toISOString(),
-    ...subProfileInput
+    createdAt: now,
+    ...subProfileInput,
   };
-  
-  const updated: PersistedProfile = {
-    ...existing,
-    subProfiles: [...(existing.subProfiles || []), newSubProfile],
-    updatedAt: new Date().toISOString()
-  };
-  
-  profiles[index] = updated;
-  await writeProfiles(profiles);
+
+  const db = await getSqlDatabase();
+  await db.run(
+    `
+      INSERT INTO sub_profiles (
+        id, profile_id, name, description, tags, extracted_context, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `,
+    [
+      newSubProfile.id,
+      profileId,
+      newSubProfile.name,
+      newSubProfile.description,
+      JSON.stringify(newSubProfile.tags),
+      newSubProfile.extractedContext ?? null,
+      newSubProfile.createdAt,
+    ],
+  );
+
+  await db.run(
+    `UPDATE profiles SET updated_at = ? WHERE profile_id = ?`,
+    [now, profileId],
+  );
+
   return newSubProfile;
 }
 
 async function deleteSubProfile(profileId: string, subProfileId: string): Promise<void> {
-  const profiles = await readProfiles();
-  const index = profiles.findIndex(p => p.profileId === profileId);
-  if (index === -1) throw new Error("PROFILE_NOT_FOUND");
-  
-  const existing = profiles[index];
-  if (!existing.subProfiles) return;
-  
-  const updatedSubProfiles = existing.subProfiles.filter(sp => sp.id !== subProfileId);
-  
-  if (updatedSubProfiles.length !== existing.subProfiles.length) {
-    const updated: PersistedProfile = {
-      ...existing,
-      subProfiles: updatedSubProfiles,
-      updatedAt: new Date().toISOString()
-    };
-    profiles[index] = updated;
-    await writeProfiles(profiles);
+  const profile = await getById(profileId);
+  if (!profile) {
+    throw new Error("PROFILE_NOT_FOUND");
+  }
+
+  const db = await getSqlDatabase();
+  const changes = await db.run(
+    `
+      DELETE FROM sub_profiles
+      WHERE profile_id = ? AND id = ?
+    `,
+    [profileId, subProfileId],
+  );
+
+  if (changes > 0) {
+    await db.run(
+      `UPDATE profiles SET updated_at = ? WHERE profile_id = ?`,
+      [new Date().toISOString(), profileId],
+    );
   }
 }
 
@@ -431,22 +543,19 @@ async function recordBehaviorSignal(profileId: string | undefined, message: stri
     return undefined;
   }
 
-  const profiles = await readProfiles();
-  const index = profiles.findIndex((profile) => profile.profileId === profileId);
-  if (index === -1) {
+  const profile = await getById(profileId);
+  if (!profile) {
     return undefined;
   }
 
-  const existing = profiles[index];
   const updated: PersistedProfile = {
-    ...existing,
-    behaviorDoc: mergeBehaviorSignal(existing.behaviorDoc, message),
+    ...profile,
+    behaviorDoc: mergeBehaviorSignal(profile.behaviorDoc, message),
     updatedAt: new Date().toISOString(),
   };
 
-  profiles[index] = updated;
-  await writeProfiles(profiles);
-  return updated;
+  await updateProfile(updated);
+  return getById(profileId);
 }
 
 export const profileStore = {
@@ -463,5 +572,5 @@ export const profileStore = {
 };
 
 export const profileStoreMeta = {
-  mode: currentStoreMode(),
+  mode: sqlDatabaseMeta.mode,
 };

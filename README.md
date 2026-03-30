@@ -17,7 +17,7 @@ ET Hackathon/
 
 - Frontend: React 18, Vite, TypeScript, Axios, Tailwind CSS
 - Backend: Node.js, Express, TypeScript, LangGraph, Zod
-- Data: Vercel KV/Upstash (when configured) with JSON fallback + mock repositories (users, articles, products)
+- Data: SQL persistence (SQLite local, Postgres on Vercel/production) + mock repositories (users, articles, products)
 - Optional LLM providers: OpenRouter, Groq, Hugging Face, Local Ollama
 
 ## Prerequisites
@@ -99,26 +99,21 @@ After both servers are running:
 - Dashboard payload: GET http://localhost:4040/api/dashboard/news
 - Validation scenarios: GET http://localhost:4040/api/validation/run-scenarios
 
-`GET /api/health` now also reports `profileStore.mode`:
-- `kv`: persistent database-backed storage configured.
-- `tmp-file`: ephemeral fallback in serverless environment.
-- `file`: local file-based storage.
-
-`GET /api/health` also reports `sessionStore.mode`:
-- `kv`: durable session retrieval across serverless instances.
-- `memory`: in-memory fallback only (ephemeral).
+`GET /api/health` now reports `profileStore.mode` and `sessionStore.mode`:
+- `postgres`: durable SQL storage (recommended for Vercel production).
+- `sqlite-file`: local SQLite file on disk.
+- `sqlite-tmp`: temporary SQLite in serverless `/tmp` (ephemeral fallback).
 
 ## Production Account Persistence
 
-For stable account login/signup persistence in production, configure Vercel KV (or Upstash Redis REST) for backend profile storage:
+For stable account login/signup persistence in production, configure SQL storage:
 
-- `KV_REST_API_URL`
-- `KV_REST_API_TOKEN`
-- Optional: `PROFILE_STORE_KEY` (default `et-super-agent:profiles:v1`)
-- Optional aliases supported: `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN`
-- Optional session controls: `SESSION_STORE_PREFIX`, `SESSION_TTL_SECONDS`
+- Preferred on Vercel: set `POSTGRES_URL` (or `DATABASE_URL`) from Vercel Postgres.
+- Also supported automatically: `POSTGRES_PRISMA_URL`, `POSTGRES_URL_NON_POOLING`, or component vars like `POSTGRES_HOST`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DATABASE`.
+- Local development: use SQLite default path (`backend/data/et-super-agent.db`) or override with `SQLITE_DB_PATH`.
+- Optional session control: `SESSION_TTL_SECONDS`.
 
-If KV is not configured, backend falls back to file storage. In serverless environments this fallback can be ephemeral, so users may need to re-register after cold starts/redeploys.
+If Postgres is not configured on Vercel, backend falls back to SQLite in `/tmp`, which is ephemeral across cold starts/redeploys.
 
 Behavior memory:
 - Chat messages now update a persisted behavior document per profile (keywords, inferred traits, summary, and recent signals).
