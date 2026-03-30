@@ -423,6 +423,13 @@ const PROFILE_QUESTIONS: Record<ProfileField, string> = {
   loanStatus: "Do you currently have active loans or credit card dues?",
 };
 
+const PROFILE_FIELD_EXAMPLES: Partial<Record<ProfileField, string>> = {
+  incomeRange: "for example: 5-10LPA, 10-15LPA, 15-25LPA, or 25LPA+",
+  riskPreference: "for example: low, medium, or high",
+  topGoal: "for example: tax planning, investing, debt reduction, savings, or wealth creation",
+  loanStatus: "for example: has loans / no loans",
+};
+
 function sanitizeName(name: string): string {
   return name.trim().replace(/[^a-zA-Z\s]/g, "").split(" ")[0] ?? "";
 }
@@ -571,6 +578,24 @@ function buildProfileFallbackMessage(input: {
       : "Hi, welcome to ET Super Agent.";
 
   return `${greeting} ${PROFILE_QUESTIONS[input.nextField]}`;
+}
+
+function buildProfileReminderMessage(input: {
+  firstName?: string;
+  nextField: ProfileField;
+}): string {
+  const fieldLabel = input.nextField
+    .replace(/([A-Z])/g, " $1")
+    .toLowerCase()
+    .trim();
+  const fieldQuestion = PROFILE_QUESTIONS[input.nextField];
+  const example = PROFILE_FIELD_EXAMPLES[input.nextField];
+
+  const prefix = input.firstName
+    ? `I already have your name, ${input.firstName}.`
+    : "I have your earlier context.";
+
+  return `${prefix} I still need your ${fieldLabel} to continue personalization. ${fieldQuestion}${example ? ` (${example})` : ""}`;
 }
 
 function asksForName(text: string): boolean {
@@ -740,12 +765,38 @@ const conciergeAgentNode = async (state: typeof GraphState.State) => {
     const nextField = getFirstMissingField(existingAnswers) ?? "incomeRange";
     const firstName = existingAnswers.name;
     const hasName = Boolean(firstName);
+    const latestAssistantMessage = state.session.history
+      .slice()
+      .reverse()
+      .find((entry) => entry.role === "assistant")?.content ?? "";
 
     const fallbackMessage = buildProfileFallbackMessage({
       firstName,
       nextField,
       hasAnyProfile,
     });
+
+    const alreadyAskedNextField = isValidProfileQuestionMessage({
+      message: latestAssistantMessage,
+      nextField,
+      hasName,
+    });
+    const userLikelyAnsweredNextField = isValidProfileQuestionMessage({
+      message: state.message,
+      nextField,
+      hasName,
+    });
+
+    if (alreadyAskedNextField && !userLikelyAnsweredNextField) {
+      return {
+        session: state.session,
+        assistantMessage: buildProfileReminderMessage({ firstName, nextField }),
+        nextQuestion: undefined,
+        recommendations: [],
+        route: "response_composer" as Route,
+        visitedNodes: [...state.visitedNodes, "ConciergeAgent"],
+      };
+    }
 
     const llmMessage = await buildConciergeMessageWithLlm({
       session: state.session,
